@@ -1,0 +1,492 @@
+import { OpenAPIRegistry, OpenApiGeneratorV31, type RouteConfig } from '@asteasolutions/zod-to-openapi';
+import { z } from 'zod';
+import { PAYMENT_PROVIDERS } from '../db/schema/index.js';
+import { paginationQuery } from '../lib/pagination.js';
+import { askQuestionSchema } from '../modules/anonymous/anonymous.schemas.js';
+import * as appointments from '../modules/appointments/appointments.schemas.js';
+import * as auth from '../modules/auth/auth.schemas.js';
+import { listDoctorsQuery } from '../modules/doctors/doctors.schemas.js';
+import { listTipsQuery } from '../modules/health-tips/health-tips.schemas.js';
+import { createLabResultSchema } from '../modules/lab-results/lab-results.schemas.js';
+import * as medications from '../modules/medications/medications.schemas.js';
+import { initializePaymentSchema } from '../modules/payments/payments.service.js';
+import * as pharmacy from '../modules/pharmacy/pharmacy.schemas.js';
+import { listReferralsQuery } from '../modules/referrals/referrals.schemas.js';
+import * as reports from '../modules/reports/reports.schemas.js';
+import { uploadQuery } from '../modules/uploads/uploads.schemas.js';
+import * as users from '../modules/users/users.schemas.js';
+import { joinWaitlistSchema, waitlistStatusQuery } from '../modules/waitlist/waitlist.schemas.js';
+import { listTransactionsQuery, transferSchema } from '../modules/wallet/wallet.schemas.js';
+import * as c from './components.js';
+
+const registry = new OpenAPIRegistry();
+
+registry.registerComponent('securitySchemes', 'bearerAuth', {
+  type: 'http',
+  scheme: 'bearer',
+  bearerFormat: 'JWT',
+  description: 'Access token from /auth/login, /auth/register, /auth/google, /auth/apple or /auth/refresh.',
+});
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+type Method = 'get' | 'post' | 'put' | 'patch' | 'delete';
+type Body = z.ZodType | { multipart: z.ZodType };
+
+interface Operation {
+  tag: string;
+  summary: string;
+  description?: string;
+  /** Defaults to true. */
+  auth?: boolean;
+  /** Restricts the route to a role (documented, enforced by the handler). */
+  role?: 'user' | 'doctor';
+  idempotent?: boolean;
+  params?: z.ZodObject;
+  query?: z.ZodObject;
+  body?: Body;
+  /** Success responses by status; `null` means no body. */
+  ok: Record<number, z.ZodType | null>;
+  /** Error codes this operation can return, documented on the error responses. */
+  errors?: Partial<Record<400 | 401 | 403 | 404 | 409 | 422 | 502 | 503, string>>;
+}
+
+const idParam = z.object({ id: z.string().meta({ example: 'E7lvcmYH7Ks38oEDCKm8' }) });
+const referenceParam = z.object({ reference: z.string().meta({ example: 'IDP_20261003_K7Q2M9XA4P' }) });
+const idempotencyHeader = z.object({
+  'Idempotency-Key': z.string().min(8).max(128).meta({
+    description: 'Unique per user intent (e.g. a UUID created when the button is first tapped). Reuse it for every retry.',
+    example: '3f1c9a8e-5b0d-4c1e-9a77-2f4d6b8c1e20',
+  }),
+});
+
+const errorResponse = (description: string) => ({
+  description,
+  content: { 'application/json': { schema: c.ErrorResponse } },
+});
+
+const STATUS_TEXT: Record<number, string> = {
+  200: 'OK',
+  201: 'Created',
+  202: 'Accepted',
+  204: 'No Content',
+};
+
+/** Express path (`/:id`) -> OpenAPI path (`/{id}`). */
+const toOpenApiPath = (path: string) => path.replace(/:([A-Za-z]+)/g, '{$1}');
+
+/** All documented operations, keyed "METHOD /path" — used by the route-coverage test. */
+export const documentedOperations = new Set<string>();
+
+function op(method: Method, path: string, o: Operation) {
+  const fullPath = path === '/health' ? path : `/v1${path}`;
+  documentedOperations.add(`${method.toUpperCase()} ${fullPath}`);
+
+  const responses: RouteConfig['responses'] = {};
+  for (const [status, schema] of Object.entries(o.ok)) {
+    responses[status] = schema
+      ? { description: STATUS_TEXT[Number(status)] ?? 'Success', content: { 'application/json': { schema } } }
+      : { description: STATUS_TEXT[Number(status)] ?? 'Success' };
+  }
+  const isAuthed = o.auth !== false;
+  const errors: NonNullable<Operation['errors']> = {
+    ...(o.body || o.query ? { 400: 'BAD_REQUEST — validation failed; `details` lists each field' } : {}),
+    ...(isAuthed ? { 401: 'UNAUTHORIZED — missing or expired access token' } : {}),
+    ...(o.role ? { 403: `FORBIDDEN — requires role "${o.role}"` } : {}),
+    ...(o.idempotent
+      ? {
+          409: 'IDEMPOTENCY_IN_PROGRESS — the same key is still being processed (see Retry-After)',
+          422: 'IDEMPOTENCY_KEY_REUSED — key already used with a different body',
+        }
+      : {}),
+  };
+  for (const [status, text] of Object.entries(o.errors ?? {})) {
+    const key = Number(status) as keyof typeof errors;
+    errors[key] = errors[key] ? `${errors[key]}; ${text}` : text;
+  }
+  for (const [status, text] of Object.entries(errors)) responses[status] = errorResponse(text);
+
+  const body: NonNullable<RouteConfig['request']>['body'] =
+    o.body === undefined
+      ? undefined
+      : 'multipart' in o.body
+        ? { required: true, content: { 'multipart/form-data': { schema: o.body.multipart } } }
+        : { required: true, content: { 'application/json': { schema: o.body } } };
+
+  const notes = [
+    o.description,
+    o.role ? `**Role:** ${o.role}.` : undefined,
+    o.idempotent ? '**Idempotent:** requires `Idempotency-Key`; a retry with the same key and body replays the original response with `Idempotent-Replayed: true`.' : undefined,
+  ].filter(Boolean);
+
+  registry.registerPath({
+    method,
+    path: toOpenApiPath(fullPath),
+    tags: [o.tag],
+    summary: o.summary,
+    description: notes.length ? notes.join('\n\n') : undefined,
+    security: isAuthed ? [{ bearerAuth: [] }] : [],
+    request: {
+      params: o.params,
+      query: o.query,
+      headers: o.idempotent ? idempotencyHeader : undefined,
+      body,
+    },
+    responses,
+  });
+}
+
+// ─── System ──────────────────────────────────────────────────────────────────
+
+op('get', '/health', { tag: 'System', summary: 'Liveness + database check', auth: false, ok: { 200: z.object({ status: z.literal('ok') }) } });
+
+// ─── Auth ────────────────────────────────────────────────────────────────────
+
+op('post', '/auth/check-email', { tag: 'Auth', summary: 'Check whether an email is free to register', auth: false, body: auth.checkEmailSchema, ok: { 200: c.Availability } });
+op('post', '/auth/otp', {
+  tag: 'Auth',
+  summary: 'Email a 5-digit verification code',
+  description: 'For `login`/`password_reset` the response is identical whether or not the account exists. Codes expire after 10 minutes; max 5 attempts; one request per minute.',
+  auth: false,
+  body: auth.requestOtpSchema,
+  ok: { 202: z.object({ message: z.string() }) },
+  errors: { 409: 'EMAIL_TAKEN (register) | OTP_RATE_LIMITED' },
+});
+op('post', '/auth/register', { tag: 'Auth', summary: 'Create an account (requires a register OTP)', auth: false, body: auth.registerSchema, ok: { 201: c.AuthResult }, errors: { 409: 'EMAIL_TAKEN' } });
+op('post', '/auth/login', {
+  tag: 'Auth',
+  summary: 'Sign in with email and password',
+  description: 'Accounts migrated from Firebase sign in with their existing password.',
+  auth: false,
+  body: auth.loginSchema,
+  ok: { 200: c.AuthResult },
+});
+op('post', '/auth/google', {
+  tag: 'Auth',
+  summary: 'Sign in with a Google ID token',
+  description: 'Links by Google account id, then by verified email; otherwise creates an account (`isNewUser: true`).',
+  auth: false,
+  body: auth.googleSchema,
+  ok: { 200: c.AuthResult },
+  errors: { 503: 'SERVICE_UNAVAILABLE — Google sign-in not configured' },
+});
+op('post', '/auth/apple', {
+  tag: 'Auth',
+  summary: 'Sign in with an Apple identity token',
+  description: 'Send `firstName`/`lastName` on first authorisation — Apple only reveals them once.',
+  auth: false,
+  body: auth.appleSchema,
+  ok: { 200: c.AuthResult },
+  errors: { 503: 'SERVICE_UNAVAILABLE — Apple sign-in not configured' },
+});
+op('post', '/auth/refresh', {
+  tag: 'Auth',
+  summary: 'Rotate the refresh token and get a new access token',
+  description: 'Each refresh token is single-use. Re-using an old one revokes the whole session family.',
+  auth: false,
+  body: auth.refreshSchema,
+  ok: { 200: z.object({ session: c.Session }) },
+});
+op('post', '/auth/logout', { tag: 'Auth', summary: 'Revoke a refresh token', auth: false, body: auth.refreshSchema, ok: { 204: null } });
+op('post', '/auth/password/reset', { tag: 'Auth', summary: 'Reset password with a password_reset OTP', auth: false, body: auth.resetPasswordSchema, ok: { 204: null } });
+op('post', '/auth/password/change', { tag: 'Auth', summary: 'Change password (signs out other sessions)', body: auth.changePasswordSchema, ok: { 204: null } });
+
+// ─── Users ───────────────────────────────────────────────────────────────────
+
+op('get', '/users/me', { tag: 'Users', summary: 'My profile', ok: { 200: c.Me } });
+op('patch', '/users/me', { tag: 'Users', summary: 'Update my profile, region and medical details', body: users.updateProfileSchema, ok: { 200: c.Me } });
+op('put', '/users/me/fcm-token', { tag: 'Users', summary: 'Register (or clear) this device’s FCM push token', body: users.fcmTokenSchema, ok: { 204: null } });
+op('put', '/users/me/presence', { tag: 'Users', summary: 'Set presence (online / offline / away)', body: users.presenceSchema, ok: { 204: null } });
+op('get', '/users/me/saved-locations', { tag: 'Users', summary: 'My saved delivery locations', ok: { 200: c.ItemsOf(c.SavedLocation, 'SavedLocation') } });
+op('post', '/users/me/saved-locations', { tag: 'Users', summary: 'Save a location', body: users.savedLocationSchema, ok: { 201: c.SavedLocation } });
+op('delete', '/users/me/saved-locations/:id', { tag: 'Users', summary: 'Delete a saved location', params: idParam, ok: { 204: null } });
+op('get', '/users/tags/:tag/availability', { tag: 'Users', summary: 'Is a referral username free?', params: users.tagSchema, ok: { 200: c.Availability } });
+op('post', '/users/me/referral-program', { tag: 'Users', summary: 'Join the referral programme with a username', body: users.tagSchema, ok: { 200: c.Me }, errors: { 409: 'TAG_TAKEN' } });
+op('get', '/users/:id', {
+  tag: 'Users',
+  summary: 'Public summary of a user',
+  description: 'Doctors are visible to everyone; patients only to doctors they share an appointment with.',
+  params: idParam,
+  ok: { 200: c.UserSummary },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND' },
+});
+
+// ─── Doctors ─────────────────────────────────────────────────────────────────
+
+op('get', '/doctors', { tag: 'Doctors', summary: 'Available doctors, most recently active first', query: listDoctorsQuery, ok: { 200: c.ItemsOf(c.Doctor, 'Doctor') } });
+op('get', '/doctors/least-busy', { tag: 'Doctors', summary: 'Active doctor with the fewest consultations in the last 24h', ok: { 200: c.Doctor }, errors: { 404: 'NOT_FOUND — nobody available' } });
+op('get', '/doctors/:id', { tag: 'Doctors', summary: 'Doctor profile with rating', params: idParam, ok: { 200: c.Doctor }, errors: { 404: 'NOT_FOUND' } });
+op('get', '/doctors/:id/reviews', { tag: 'Doctors', summary: 'Doctor reviews', params: idParam, query: paginationQuery, ok: { 200: c.page(c.DoctorReview, 'DoctorReview') } });
+
+// ─── Appointments ────────────────────────────────────────────────────────────
+
+op('get', '/appointments/packages', { tag: 'Appointments', summary: 'Consultation packages priced for my region', ok: { 200: c.ItemsOf(c.AppointmentPackage, 'AppointmentPackage') } });
+op('post', '/appointments', {
+  tag: 'Appointments',
+  summary: 'Book an appointment',
+  description: [
+    'Omit `doctorId` to create an **open request** that any doctor can accept after payment (the app’s default flow). With `doctorId`, the doctor’s calendar is checked under a lock so a slot can never be double-booked.',
+    'The price is computed server-side from the package and your region. Pay with `POST /payments { purpose: "appointment", referenceId }`. Unpaid bookings hold the slot for 30 minutes.',
+    '`isTrial: true` books the free trial (once per user); it is confirmed immediately with no payment.',
+  ].join('\n\n'),
+  role: 'user',
+  idempotent: true,
+  body: appointments.createAppointmentSchema,
+  ok: { 201: c.Appointment, 200: c.Appointment },
+  errors: {
+    409: 'SLOT_UNAVAILABLE | TRIAL_UNAVAILABLE',
+    422: 'DOCTOR_UNAVAILABLE | TRIAL_DISABLED',
+  },
+});
+op('get', '/appointments', { tag: 'Appointments', summary: 'My appointments (patients: booked; doctors: assigned)', query: appointments.listAppointmentsQuery, ok: { 200: c.page(c.Appointment, 'Appointment') } });
+op('get', '/appointments/open', { tag: 'Appointments', summary: 'Paid open requests awaiting a doctor', role: 'doctor', query: appointments.listAppointmentsQuery, ok: { 200: c.page(c.Appointment, 'Appointment') } });
+op('get', '/appointments/:id', { tag: 'Appointments', summary: 'Appointment details', params: idParam, ok: { 200: c.Appointment }, errors: { 404: 'NOT_FOUND' } });
+op('delete', '/appointments/:id', { tag: 'Appointments', summary: 'Remove an appointment from my list (soft delete)', params: idParam, ok: { 204: null }, errors: { 403: 'FORBIDDEN — patients only', 404: 'NOT_FOUND' } });
+op('post', '/appointments/:id/accept', {
+  tag: 'Appointments',
+  summary: 'Accept a paid booking',
+  description: 'Atomically claims an open request (exactly one doctor wins) or accepts one addressed to you. Fails if it overlaps your calendar.',
+  role: 'doctor',
+  params: idParam,
+  ok: { 200: c.Appointment },
+  errors: { 409: 'ALREADY_TAKEN | SLOT_UNAVAILABLE | INVALID_TRANSITION', 422: 'NOT_PAID' },
+});
+op('post', '/appointments/:id/status', {
+  tag: 'Appointments',
+  summary: 'Complete or cancel an accepted appointment',
+  role: 'doctor',
+  params: idParam,
+  body: appointments.doctorStatusSchema,
+  ok: { 200: c.Appointment },
+  errors: { 409: 'INVALID_TRANSITION | CONCURRENT_UPDATE' },
+});
+
+op('get', '/appointments/:id/messages', {
+  tag: 'Chat',
+  summary: 'Chat history (newest first, cursor paginated)',
+  description: 'Live updates arrive over Socket.IO after emitting `appointment:join`.',
+  params: idParam,
+  query: appointments.listMessagesQuery,
+  ok: { 200: c.MessagePage },
+});
+op('post', '/appointments/:id/messages', {
+  tag: 'Chat',
+  summary: 'Send a message',
+  description: 'For attachments, upload first via `POST /uploads?folder=chat` and send the returned `url` as `fileUrl`.',
+  params: idParam,
+  body: appointments.sendMessageSchema,
+  ok: { 201: c.Message },
+  errors: { 422: 'NOT_PAID | NOT_ASSIGNED' },
+});
+op('patch', '/appointments/:id/messages/:messageId', {
+  tag: 'Chat',
+  summary: 'Edit my message',
+  params: z.object({ id: z.string(), messageId: z.string() }),
+  body: appointments.editMessageSchema,
+  ok: { 200: c.Message },
+  errors: { 403: 'FORBIDDEN — not your message', 422: 'MESSAGE_DELETED' },
+});
+op('delete', '/appointments/:id/messages/:messageId', { tag: 'Chat', summary: 'Delete my message (content is removed)', params: z.object({ id: z.string(), messageId: z.string() }), ok: { 204: null } });
+op('post', '/appointments/:id/messages/read', { tag: 'Chat', summary: 'Mark the other participant’s messages as read', params: idParam, ok: { 204: null } });
+op('get', '/appointments/:id/messages/unread-count', { tag: 'Chat', summary: 'Unread messages from the other participant', params: idParam, ok: { 200: c.Count } });
+
+op('get', '/appointments/:id/prescriptions', { tag: 'Clinical', summary: 'Prescriptions for an appointment', params: idParam, ok: { 200: c.ItemsOf(c.Prescription, 'Prescription') } });
+op('post', '/prescriptions/:id/seen', { tag: 'Clinical', summary: 'Mark a prescription as seen', params: idParam, ok: { 204: null } });
+op('get', '/appointments/:id/review', { tag: 'Clinical', summary: 'My review of this appointment, if any', params: idParam, ok: { 200: z.object({ review: c.Review.nullable() }) } });
+op('post', '/appointments/:id/review', {
+  tag: 'Clinical',
+  summary: 'Rate the doctor (once per appointment)',
+  role: 'user',
+  params: idParam,
+  body: appointments.reviewSchema,
+  ok: { 201: c.Review },
+  errors: { 409: 'ALREADY_REVIEWED', 422: 'NOT_PAID | NOT_ASSIGNED' },
+});
+op('post', '/reports', { tag: 'Clinical', summary: 'Report a problem with an appointment', body: reports.createReportSchema, ok: { 201: c.Report }, errors: { 409: 'ALREADY_REPORTED' } });
+op('get', '/reports', { tag: 'Clinical', summary: 'My reports (optionally for one appointment)', query: reports.listReportsQuery, ok: { 200: c.ItemsOf(c.Report, 'Report') } });
+op('get', '/reports/:id/messages', { tag: 'Clinical', summary: 'Support conversation for a report', params: idParam, ok: { 200: c.ItemsOf(c.ReportMessage, 'ReportMessage') } });
+op('post', '/reports/:id/messages', { tag: 'Clinical', summary: 'Reply on a report', params: idParam, body: reports.reportMessageSchema, ok: { 201: c.ReportMessage } });
+op('delete', '/reports/:id', { tag: 'Clinical', summary: 'Delete a report and its conversation', params: idParam, ok: { 204: null } });
+
+// ─── Payments ────────────────────────────────────────────────────────────────
+
+op('post', '/payments', {
+  tag: 'Payments',
+  summary: 'Start a payment (Stripe, Paystack or Flutterwave)',
+  description: [
+    'The amount is derived from server-side state (appointment, checkout, lab result) — never from the client. `wallet_topup` takes an NGN `amount`.',
+    'Follow `clientAction`: present the Stripe payment sheet with `clientSecret`, or open `authorizationUrl` for Paystack/Flutterwave. Then call `POST /payments/{reference}/verify`.',
+  ].join('\n\n'),
+  idempotent: true,
+  body: initializePaymentSchema,
+  ok: { 201: c.PaymentInitialized },
+  errors: {
+    404: 'NOT_FOUND — target does not exist or is not yours',
+    409: 'ALREADY_PAID | SLOT_UNAVAILABLE',
+    422: 'NO_PAYMENT_REQUIRED | APPOINTMENT_STARTED | APPOINTMENT_CANCELLED | CURRENCY_NOT_SUPPORTED',
+    502: 'PAYMENT_PROVIDER_ERROR',
+    503: 'SERVICE_UNAVAILABLE — provider not configured',
+  },
+});
+op('get', '/payments/:reference', { tag: 'Payments', summary: 'Payment status', params: referenceParam, ok: { 200: c.Payment } });
+op('post', '/payments/:reference/verify', {
+  tag: 'Payments',
+  summary: 'Confirm a payment with the provider',
+  description: 'Call after the payment sheet / checkout closes. Safe to call repeatedly; the purchase is fulfilled exactly once. A short capture is marked `failed`.',
+  params: referenceParam,
+  ok: { 200: c.Payment },
+});
+op('post', '/webhooks/:provider', {
+  tag: 'Payments',
+  summary: 'Provider webhook (server-to-server)',
+  description:
+    'Register with each provider. Signatures: Stripe `Stripe-Signature`; Paystack `x-paystack-signature` (HMAC-SHA512); Flutterwave `verif-hash`. Redeliveries are de-duplicated; status is re-verified with the provider API.',
+  auth: false,
+  params: z.object({ provider: z.enum(PAYMENT_PROVIDERS) }),
+  body: z.object({}).loose().meta({ description: 'Raw provider event payload.' }),
+  ok: { 200: c.WebhookAck },
+  errors: { 401: 'UNAUTHORIZED — invalid signature' },
+});
+
+op('get', '/wallet', { tag: 'Wallet', summary: 'My wallet balance (NGN)', ok: { 200: c.Wallet } });
+op('get', '/wallet/transactions', { tag: 'Wallet', summary: 'Wallet history', query: listTransactionsQuery, ok: { 200: c.page(c.WalletTransaction, 'WalletTransaction') } });
+op('post', '/wallet/transfers', {
+  tag: 'Wallet',
+  summary: 'Send funds to another user by email',
+  idempotent: true,
+  body: transferSchema,
+  ok: { 201: c.TransferResult },
+  errors: { 400: 'No user with that email / cannot send to yourself', 422: 'INSUFFICIENT_FUNDS' },
+});
+op('get', '/referrals', { tag: 'Wallet', summary: 'People I referred in a month (default: current)', query: listReferralsQuery, ok: { 200: c.ItemsOf(c.Referral, 'Referral') } });
+op('get', '/referrals/summary', { tag: 'Wallet', summary: 'Referral totals and balance', ok: { 200: c.ReferralSummary } });
+
+// ─── Pharmacy ────────────────────────────────────────────────────────────────
+
+op('get', '/pharmacies', { tag: 'Pharmacy', summary: 'Pharmacies (nearest first when a location is given)', query: pharmacy.nearbyQuery, ok: { 200: c.ItemsOf(c.Pharmacy, 'Pharmacy') } });
+op('get', '/pharmacies/:id', { tag: 'Pharmacy', summary: 'Pharmacy details', params: idParam, ok: { 200: c.Pharmacy } });
+op('get', '/pharmacies/:id/products', { tag: 'Pharmacy', summary: 'A pharmacy’s products', params: idParam, ok: { 200: c.ItemsOf(c.Product, 'Product') } });
+op('get', '/products/categories', { tag: 'Pharmacy', summary: 'Product categories', ok: { 200: c.ItemsOf(c.ProductCategory, 'ProductCategory') } });
+op('get', '/products/:id', { tag: 'Pharmacy', summary: 'Product details', params: idParam, ok: { 200: c.Product } });
+op('post', '/orders/quote', {
+  tag: 'Pharmacy',
+  summary: 'Price a cart (delivery fees + surcharge) without ordering',
+  body: pharmacy.cartSchema,
+  ok: { 200: c.CartQuote },
+  errors: { 422: 'OUT_OF_STOCK | PHARMACY_NOT_DELIVERABLE' },
+});
+op('post', '/orders/checkout', {
+  tag: 'Pharmacy',
+  summary: 'Create a checkout (one order per pharmacy), awaiting payment',
+  idempotent: true,
+  body: pharmacy.checkoutSchema,
+  ok: { 201: c.Checkout, 200: c.Checkout },
+  errors: { 422: 'OUT_OF_STOCK | PHARMACY_NOT_DELIVERABLE' },
+});
+op('get', '/orders', { tag: 'Pharmacy', summary: 'My orders', query: pharmacy.listOrdersQuery, ok: { 200: c.page(c.Order, 'Order') } });
+op('get', '/orders/:id', { tag: 'Pharmacy', summary: 'Order details and tracking status', params: idParam, ok: { 200: c.Order } });
+
+// ─── Health ──────────────────────────────────────────────────────────────────
+
+op('get', '/lab-results/price', { tag: 'Health', summary: 'Lab result interpretation price for my region', ok: { 200: c.Quote } });
+op('post', '/lab-results', {
+  tag: 'Health',
+  summary: 'Submit lab result files for interpretation',
+  description: 'Upload files first (`POST /uploads?folder=lab-results`). Pay with `POST /payments { purpose: "lab_result" }`.',
+  idempotent: true,
+  body: createLabResultSchema,
+  ok: { 201: c.LabResult },
+});
+op('get', '/lab-results', { tag: 'Health', summary: 'My lab results', ok: { 200: c.ItemsOf(c.LabResult, 'LabResult') } });
+op('post', '/lab-results/:id/opened', { tag: 'Health', summary: 'Mark a result as opened', params: idParam, ok: { 204: null } });
+op('delete', '/lab-results/:id', { tag: 'Health', summary: 'Delete a lab result', params: idParam, ok: { 204: null } });
+
+op('get', '/medications', { tag: 'Health', summary: 'My medication schedules with dose history', ok: { 200: c.ItemsOf(c.Medication, 'Medication') } });
+op('post', '/medications', { tag: 'Health', summary: 'Add a medication schedule', body: medications.medicationSchema, ok: { 201: c.Medication } });
+op('get', '/medications/:id', { tag: 'Health', summary: 'Medication details', params: idParam, ok: { 200: c.Medication } });
+op('patch', '/medications/:id', { tag: 'Health', summary: 'Update a medication schedule', params: idParam, body: medications.updateMedicationSchema, ok: { 200: c.Medication } });
+op('delete', '/medications/:id', { tag: 'Health', summary: 'Delete a medication schedule', params: idParam, ok: { 204: null } });
+op('put', '/medications/:id/doses', { tag: 'Health', summary: 'Mark a dose as taken or missed', params: idParam, body: medications.doseSchema, ok: { 200: c.Medication } });
+
+// ─── Content ─────────────────────────────────────────────────────────────────
+
+op('get', '/health-tips/categories', { tag: 'Content', summary: 'Health tip categories with article counts', ok: { 200: c.ItemsOf(c.HealthTipCategory, 'HealthTipCategory') } });
+op('get', '/health-tips', { tag: 'Content', summary: 'Published health tips', query: listTipsQuery, ok: { 200: c.page(c.HealthTipSummary, 'HealthTipSummary') } });
+op('get', '/health-tips/:id', { tag: 'Content', summary: 'Read a health tip (records a unique view)', params: idParam, ok: { 200: c.HealthTip } });
+op('get', '/health-tips/:id/related', { tag: 'Content', summary: 'Related tips from the same category', params: idParam, ok: { 200: c.ItemsOf(c.HealthTipSummary, 'HealthTipSummary') } });
+op('post', '/health-tips/:id/like', { tag: 'Content', summary: 'Toggle my like', params: idParam, ok: { 200: c.LikeState } });
+op('get', '/anonymous-questions', { tag: 'Content', summary: 'My anonymous questions', ok: { 200: c.ItemsOf(c.AnonymousQuestion, 'AnonymousQuestion') } });
+op('post', '/anonymous-questions', { tag: 'Content', summary: 'Ask a doctor anonymously', body: askQuestionSchema, ok: { 201: c.AnonymousQuestion } });
+op('delete', '/anonymous-questions/:id', { tag: 'Content', summary: 'Delete my question', params: idParam, ok: { 204: null } });
+
+// ─── Misc ────────────────────────────────────────────────────────────────────
+
+op('get', '/notifications', { tag: 'Notifications', summary: 'My notifications, newest first', query: paginationQuery, ok: { 200: c.page(c.Notification, 'Notification') } });
+op('get', '/notifications/unread-count', { tag: 'Notifications', summary: 'Unread notification count', ok: { 200: c.Count } });
+op('post', '/notifications/read-all', { tag: 'Notifications', summary: 'Mark all notifications as read', ok: { 204: null } });
+op('post', '/waitlist', { tag: 'Misc', summary: 'Join the delivery waitlist for an area', body: joinWaitlistSchema, ok: { 201: c.WaitlistEntry } });
+op('get', '/waitlist/status', { tag: 'Misc', summary: 'Have I joined the waitlist for this location?', query: waitlistStatusQuery, ok: { 200: z.object({ joined: z.boolean() }) } });
+op('post', '/uploads', {
+  tag: 'Misc',
+  summary: 'Upload a file (images, PDF, Word, audio; max 15 MB)',
+  description: 'Returns a URL to use as `fileUrl` in chat, reports or lab results.',
+  query: uploadQuery,
+  body: { multipart: z.object({ file: z.string().meta({ format: 'binary' }) }) },
+  ok: { 201: c.StoredFile },
+});
+op('get', '/settings', { tag: 'Misc', summary: 'App settings (feature flags, version, marquee)', auth: false, ok: { 200: c.AppSettings } });
+op('get', '/currencies', { tag: 'Misc', summary: 'Supported currencies', auth: false, ok: { 200: c.ItemsOf(z.object({ code: z.string() }), 'Currency') } });
+op('get', '/video-call/credentials', { tag: 'Misc', summary: 'Active video call (ZEGOCLOUD) credentials', ok: { 200: c.VideoCallCredentials }, errors: { 404: 'NOT_FOUND' } });
+
+// ─── Document ────────────────────────────────────────────────────────────────
+
+const OVERVIEW = `
+Core API for the Instant Doctor patient app.
+
+## Authentication
+Send \`Authorization: Bearer <accessToken>\`. Access tokens expire after ~15 minutes; exchange the refresh token at \`POST /v1/auth/refresh\` (refresh tokens rotate — always store the new one).
+
+## Errors
+Every error is \`{ "error": { "code", "message", "details?" } }\`. Branch on \`code\`, not on \`message\`.
+
+## Idempotency
+Operations marked **Idempotent** require an \`Idempotency-Key\` header. Generate one UUID per user intent and reuse it for retries: the first result is replayed (\`Idempotent-Replayed: true\`) instead of booking or charging twice. Keys are kept for 24 hours.
+
+## Pagination
+List endpoints take \`limit\` and \`offset\` (chat uses a \`before\` timestamp cursor) and return \`nextOffset\` / \`nextBefore\`, \`null\` on the last page.
+
+## Realtime (Socket.IO)
+Connect with \`io(BASE_URL, { auth: { token } })\`. You join your personal room automatically; emit \`appointment:join\` (appointment id, ack) to receive that chat.
+
+| Event | Payload |
+| --- | --- |
+| \`message:new\`, \`message:updated\` | Message |
+| \`messages:read\` | \`{ appointmentId, readerId }\` |
+| \`appointment:updated\` | \`{ id, status, isPaid }\` |
+| \`notification:new\` | Notification |
+| \`payment:updated\` | \`{ reference, status, purpose }\` |
+`.trim();
+
+export function buildOpenApiDocument(serverUrl: string) {
+  return new OpenApiGeneratorV31(registry.definitions).generateDocument({
+    openapi: '3.1.0',
+    info: { title: 'Instant Doctor API', version: '1.0.0', description: OVERVIEW },
+    servers: [{ url: serverUrl }],
+    tags: [
+      { name: 'Auth', description: 'Registration, sign-in (email, Google, Apple) and sessions' },
+      { name: 'Users', description: 'Profile, devices and saved locations' },
+      { name: 'Doctors' },
+      { name: 'Appointments', description: 'Booking, open requests and lifecycle' },
+      { name: 'Chat', description: 'Consultation messaging' },
+      { name: 'Clinical', description: 'Prescriptions, reviews and reports' },
+      { name: 'Payments', description: 'Stripe, Paystack and Flutterwave' },
+      { name: 'Wallet', description: 'Wallet, transfers and referrals' },
+      { name: 'Pharmacy', description: 'Pharmacies, products and orders' },
+      { name: 'Health', description: 'Lab results and medication tracking' },
+      { name: 'Content', description: 'Health tips and anonymous questions' },
+      { name: 'Notifications' },
+      { name: 'Misc' },
+      { name: 'System' },
+    ],
+  });
+}

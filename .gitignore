@@ -1,0 +1,10 @@
+node_modules
+dist
+coverage
+uploads
+.env
+.env.*
+!.env.example
+*.log
+migration-report*.json
+service-account*.json
