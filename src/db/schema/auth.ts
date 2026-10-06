@@ -60,3 +60,25 @@ export const otpCodes = mysqlTable(
   },
   (t) => [index('otp_codes_lookup_idx').on(t.email, t.purpose, t.createdAt)],
 );
+
+/**
+ * Issued once a password-reset code has been verified; exchanged (once) for a
+ * new password. Stored hashed, short-lived, single-use.
+ */
+export const passwordResetTokens = mysqlTable(
+  'password_reset_tokens',
+  {
+    id: id('id').primaryKey(),
+    userId: id('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+    expiresAt: timestamp('expires_at').notNull(),
+    usedAt: timestamp('used_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('password_reset_tokens_hash_uq').on(t.tokenHash),
+    index('password_reset_tokens_user_idx').on(t.userId),
+  ],
+);

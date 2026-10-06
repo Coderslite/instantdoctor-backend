@@ -12,6 +12,7 @@ import {
   users,
 } from '../../db/schema/index.js';
 import { mailer } from '../../integrations/mailer.js';
+import { emailAppointmentUpdate } from '../appointments/appointment-emails.js';
 import { sendPush } from '../../integrations/push.js';
 import { notFound } from '../../lib/errors.js';
 import { realtime } from '../../realtime/gateway.js';
@@ -107,6 +108,7 @@ export async function confirmAppointment(
         isPaid: true,
       }),
     () => mailer.activity(appointment.userId, 'Appointment'),
+    () => emailAppointmentUpdate(appointment.id, 'confirmed'),
   );
 
   return { effects, duplicate: false };
@@ -192,25 +194,27 @@ export async function confirmCheckout(tx: Tx, checkoutId: string): Promise<Fulfi
     .where(eq(users.id, checkout.userId));
   const pharmacyRows = checkoutOrders.length
     ? await tx
-        .select({ id: pharmacies.id, email: pharmacies.email })
+        .select({ id: pharmacies.id, email: pharmacies.email, name: pharmacies.name })
         .from(pharmacies)
         .where(inArray(pharmacies.id, checkoutOrders.map((o) => o.pharmacyId)))
     : [];
-  const emailByPharmacy = new Map(pharmacyRows.map((p) => [p.id, p.email]));
+  const pharmacyById = new Map(pharmacyRows.map((p) => [p.id, p]));
+  const customerName = `${customer?.firstName ?? ''} ${customer?.lastName ?? ''}`.trim() || 'A customer';
 
   for (const order of checkoutOrders) {
-    const pharmacyEmail = emailByPharmacy.get(order.pharmacyId);
-    if (!pharmacyEmail) continue;
-    const orderDetails = items
+    const pharmacy = pharmacyById.get(order.pharmacyId);
+    if (!pharmacy?.email) continue;
+    const lines = items
       .filter((i) => i.orderId === order.id)
-      .map((i) => `${i.name} (Qty: ${i.quantity})`)
-      .join(', ');
+      .map((i) => ({ name: i.name, quantity: i.quantity }));
     effects.push(() =>
-      mailer.orderReceived({
-        pharmacyEmail,
-        orderId: order.trackingId,
-        orderDetails,
-        customerName: `${customer?.firstName ?? ''} ${customer?.lastName ?? ''}`.trim(),
+      mailer.pharmacyNewOrder({
+        to: pharmacy.email,
+        pharmacyName: pharmacy.name,
+        trackingId: order.trackingId,
+        customerName,
+        items: lines,
+        deliveryAddress: order.address,
       }),
     );
   }

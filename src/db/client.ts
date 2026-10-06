@@ -27,6 +27,10 @@ export const pool = mysql.createPool({
   charset: 'utf8mb4_unicode_ci',
 });
 
+pool.pool.on('connection', (connection) => {
+  connection.query("SET time_zone = '+00:00'");
+});
+
 export const db = drizzle(pool, { schema, mode: 'default' });
 
 export type Database = MySql2Database<typeof schema>;

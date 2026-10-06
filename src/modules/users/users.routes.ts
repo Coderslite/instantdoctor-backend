@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { parse } from '../../lib/validation.js';
 import { authenticate, currentUser } from '../../middleware/authenticate.js';
 import * as schemas from './users.schemas.js';
+import * as referrals from '../referrals/referrals.service.js';
 import * as service from './users.service.js';
 
 export const usersRouter = Router();
@@ -50,6 +51,30 @@ usersRouter.get('/tags/:tag/availability', async (req, res) => {
 usersRouter.post('/me/referral-program', async (req, res) => {
   const { tag } = parse(schemas.tagSchema, req.body);
   res.json(await service.applyForReferralProgram(currentUser(req).userId, tag));
+});
+
+usersRouter.get('/me/payout-account', async (req, res) => {
+  res.json(await service.getPayoutAccount(currentUser(req).userId));
+});
+
+usersRouter.put('/me/payout-account', async (req, res) => {
+  const input = parse(schemas.payoutAccountSchema, req.body);
+  res.json(await service.savePayoutAccount(currentUser(req).userId, input));
+});
+
+usersRouter.delete('/me/payout-account', async (req, res) => {
+  await service.deletePayoutAccount(currentUser(req).userId);
+  res.status(204).end();
+});
+
+/** Referral code entered after sign-up (e.g. Google/Apple users). */
+usersRouter.get('/me/referral', async (req, res) => {
+  res.json(await referrals.getMyReferral(currentUser(req).userId));
+});
+
+usersRouter.post('/me/referral', async (req, res) => {
+  const { code } = parse(schemas.applyReferralSchema, req.body);
+  res.json(await referrals.applyReferralCode(currentUser(req).userId, code));
 });
 
 usersRouter.get('/:id', async (req, res) => {

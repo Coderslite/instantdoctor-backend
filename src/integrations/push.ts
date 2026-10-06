@@ -1,5 +1,8 @@
 import { getMessaging } from 'firebase-admin/messaging';
-import { env } from '../config/env.js';
+import { and, eq, inArray } from 'drizzle-orm';
+import { databaseConfig, db } from '../db/client.js';
+import { users } from '../db/schema/index.js';
+import { env, isTest } from '../config/env.js';
 import { logger } from '../lib/logger.js';
 import { getFirebaseApp } from './firebase.js';
 
@@ -15,7 +18,28 @@ export interface PushMessage {
  * never thrown, so they cannot roll back the business operation that triggered them.
  */
 export async function sendPush(tokens: Array<string | null | undefined>, message: PushMessage) {
-  const valid = [...new Set(tokens.filter((t): t is string => Boolean(t && t.trim())))];
+  let valid = [...new Set(tokens.filter((t): t is string => Boolean(t && t.trim())))];
+  // A local database is used for testing. Do not alert real doctors from it;
+  // keep one explicit test recipient so the full FCM flow remains testable.
+  if ((isTest || databaseConfig.target === 'local') && valid.length > 0) {
+    const recipients = await db
+      .select({ token: users.fcmToken })
+      .from(users)
+      .where(
+        and(
+          inArray(users.fcmToken, valid),
+          eq(users.role, 'doctor'),
+          eq(users.email, env.TEST_DOCTOR_PUSH_EMAIL),
+        ),
+      );
+    const permittedDoctorTokens = new Set(recipients.map((recipient) => recipient.token));
+    const doctorTokens = await db
+      .select({ token: users.fcmToken })
+      .from(users)
+      .where(and(inArray(users.fcmToken, valid), eq(users.role, 'doctor')));
+    const allDoctorTokens = new Set(doctorTokens.map((doctor) => doctor.token));
+    valid = valid.filter((token) => !allDoctorTokens.has(token) || permittedDoctorTokens.has(token));
+  }
   if (!env.ENABLE_PUSH || valid.length === 0) return;
   const app = getFirebaseApp();
   if (!app) {

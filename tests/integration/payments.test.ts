@@ -54,7 +54,7 @@ describe('payments', () => {
     const doctor = await createDoctor();
     const packageId = await createPackage({ amountUsd: 10 });
     const booked = await api()
-      .post('/v1/appointments')
+      .post('/api/v1/appointments')
       .set(auth(patient.token))
       .set('Idempotency-Key', 'pay-flow-booking')
       .send({ packageId, doctorId: doctor.id, startTime: inHours(5) });
@@ -63,7 +63,7 @@ describe('payments', () => {
 
   const initialize = (key: string) =>
     api()
-      .post('/v1/payments')
+      .post('/api/v1/payments')
       .set(auth(patient.token))
       .set('Idempotency-Key', key)
       .send({ purpose: 'appointment', referenceId: appointmentId, provider: 'paystack' });
@@ -83,8 +83,8 @@ describe('payments', () => {
     provider.outcome = () => ({ outcome: 'succeeded', amountMinor: 750_000, currency: 'NGN', providerReference: '999' });
 
     const [v1, v2] = await Promise.all([
-      api().post(`/v1/payments/${body.payment.reference}/verify`).set(auth(patient.token)),
-      api().post(`/v1/payments/${body.payment.reference}/verify`).set(auth(patient.token)),
+      api().post(`/api/v1/payments/${body.payment.reference}/verify`).set(auth(patient.token)),
+      api().post(`/api/v1/payments/${body.payment.reference}/verify`).set(auth(patient.token)),
     ]);
     expect(v1.body.status).toBe('succeeded');
     expect(v2.body.status).toBe('succeeded');
@@ -101,13 +101,13 @@ describe('payments', () => {
     const doctor2 = await createDoctor();
     const packageId = await createPackage({ amountUsd: 10 });
     const second = await api()
-      .post('/v1/appointments')
+      .post('/api/v1/appointments')
       .set(auth(patient.token))
       .set('Idempotency-Key', 'pay-flow-booking-2')
       .send({ packageId, doctorId: doctor2.id, startTime: inHours(9) });
     const pay = (referenceId: string, key: string) =>
       api()
-        .post('/v1/payments')
+        .post('/api/v1/payments')
         .set(auth(patient.token))
         .set('Idempotency-Key', key)
         .send({ purpose: 'appointment', referenceId, provider: 'paystack' });
@@ -115,7 +115,7 @@ describe('payments', () => {
     provider.outcome = () => ({ outcome: 'succeeded', amountMinor: 750_000, currency: 'NGN', providerReference: '5' });
 
     await Promise.all(
-      [p1, p2].map((p) => api().post(`/v1/payments/${p.body.payment.reference}/verify`).set(auth(patient.token))),
+      [p1, p2].map((p) => api().post(`/api/v1/payments/${p.body.payment.reference}/verify`).set(auth(patient.token))),
     );
 
     const [ref] = await db.select().from(referrals).where(eq(referrals.userId, patient.id));
@@ -125,7 +125,7 @@ describe('payments', () => {
     it('refuses to fulfil when the captured amount is short', async () => {
     const { body } = await initialize('pay-init-key-03');
     provider.outcome = () => ({ outcome: 'succeeded', amountMinor: 100, currency: 'NGN', providerReference: '1' });
-    const res = await api().post(`/v1/payments/${body.payment.reference}/verify`).set(auth(patient.token));
+    const res = await api().post(`/api/v1/payments/${body.payment.reference}/verify`).set(auth(patient.token));
     expect(res.body.status).toBe('failed');
     const [appt] = await db.select().from(appointments).where(eq(appointments.id, appointmentId));
     expect(appt!.isPaid).toBe(false);
@@ -138,7 +138,7 @@ describe('payments', () => {
 
     const send = () =>
       api()
-        .post('/v1/webhooks/paystack')
+        .post('/api/v1/webhooks/paystack')
         .set('Content-Type', 'application/json')
         .set('x-paystack-signature', sign(event))
         .send(event);
@@ -155,7 +155,7 @@ describe('payments', () => {
 
   it('rejects webhooks with a bad signature', async () => {
     const res = await api()
-      .post('/v1/webhooks/paystack')
+      .post('/api/v1/webhooks/paystack')
       .set('Content-Type', 'application/json')
       .set('x-paystack-signature', 'forged')
       .send(JSON.stringify({ event: 'charge.success', data: { id: 1, reference: 'x' } }));

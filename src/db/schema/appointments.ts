@@ -69,6 +69,7 @@ export const appointments = mysqlTable(
 
     startTime: timestamp('start_time').notNull(),
     endTime: timestamp('end_time').notNull(),
+    timeZone: varchar('time_zone', { length: 64 }),
 
     price: money('price').notNull(),
     currency: varchar('currency', { length: 3 }),

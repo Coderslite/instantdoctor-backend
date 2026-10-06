@@ -1,11 +1,12 @@
 import { and, eq, or } from 'drizzle-orm';
 import { db } from '../../db/client.js';
-import { appointments, savedLocations, userMedicalProfiles, users } from '../../db/schema/index.js';
+import { appointments, payoutAccounts, savedLocations, userMedicalProfiles, users } from '../../db/schema/index.js';
 import { isDuplicateKeyError } from '../../lib/db-errors.js';
-import { conflict, forbidden, notFound } from '../../lib/errors.js';
+import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
+import { toE164 } from '../../lib/phone.js';
 import { newId } from '../../lib/ids.js';
 import type { z } from 'zod';
-import type { savedLocationSchema, updateProfileSchema } from './users.schemas.js';
+import type { payoutAccountSchema, savedLocationSchema, updateProfileSchema } from './users.schemas.js';
 import { serializeMe, serializeUserSummary } from './users.serializer.js';
 
 export async function getMe(userId: string) {
@@ -21,6 +22,14 @@ export async function getMe(userId: string) {
 
 export async function updateMe(userId: string, input: z.infer<typeof updateProfileSchema>) {
   const { medical, location, ...profile } = input;
+  if (profile.phoneNumber) {
+    const [current] = await db.select({ country: users.country }).from(users).where(eq(users.id, userId));
+    const normalized = toE164(profile.phoneNumber, profile.country ?? current?.country);
+    if (!normalized) {
+      throw badRequest('Enter a valid phone number for your country', [{ path: 'phoneNumber', message: 'invalid' }]);
+    }
+    profile.phoneNumber = normalized;
+  }
   await db.transaction(async (tx) => {
     const patch = {
       ...profile,
@@ -101,4 +110,43 @@ export async function getUserSummary(viewerId: string, targetId: string) {
     if (!shared) throw forbidden();
   }
   return serializeUserSummary(target);
+}
+
+// ─── Payout account (where referral earnings / doctor earnings are paid) ─────
+
+const serializePayout = (row: typeof payoutAccounts.$inferSelect) => ({
+  bankName: row.bankName,
+  bankCode: row.bankCode,
+  accountNumber: row.accountNumber,
+  accountName: row.accountName,
+  updatedAt: row.updatedAt,
+});
+
+export async function getPayoutAccount(userId: string) {
+  const [row] = await db.select().from(payoutAccounts).where(eq(payoutAccounts.userId, userId)).limit(1);
+  if (!row?.accountNumber) throw notFound('Payout account');
+  return serializePayout(row);
+}
+
+/**
+ * Creates or replaces the payout account. The provider recipient code belongs to
+ * the old bank details, so it is cleared and re-created at the next payout.
+ */
+export async function savePayoutAccount(userId: string, input: z.infer<typeof payoutAccountSchema>) {
+  const values = {
+    bankName: input.bankName,
+    bankCode: input.bankCode ?? null,
+    accountNumber: input.accountNumber,
+    accountName: input.accountName,
+    recipientCode: null,
+  };
+  await db
+    .insert(payoutAccounts)
+    .values({ userId, ...values })
+    .onDuplicateKeyUpdate({ set: values });
+  return getPayoutAccount(userId);
+}
+
+export async function deletePayoutAccount(userId: string) {
+  await db.delete(payoutAccounts).where(eq(payoutAccounts.userId, userId));
 }

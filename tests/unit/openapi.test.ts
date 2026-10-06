@@ -15,7 +15,7 @@ const files = (dir: string): string[] =>
 function implementedOperations(): Set<string> {
   const mounts = new Map<string, string>();
   for (const [, path, router] of readFileSync('src/routes.ts', 'utf8').matchAll(/apiRouter\.use\('([^']*)',\s*(\w+)\)/g)) {
-    mounts.set(router!, `/v1${path === '/' ? '' : path}`);
+    mounts.set(router!, `/api/v1${path === '/' ? '' : path}`);
   }
   const appSource = readFileSync('src/app.ts', 'utf8');
   for (const [, path, router] of appSource.matchAll(/app\.use\('([^']*)',\s*(\w+Router)\)/g)) mounts.set(router!, path!);

@@ -17,6 +17,8 @@ const COUNTRY_CURRENCY: Record<string, string> = {
   AE: 'AED', SA: 'SAR', QA: 'QAR', TR: 'TRY',
 };
 
+const AFRICAN_SHARED_CURRENCY_COUNTRY: Record<string, string> = { XAF: 'CM', XOF: 'SN' };
+
 export const AFRICAN_DISCOUNT_RATE = 0.5;
 
 export interface Region {
@@ -43,7 +45,9 @@ const CURRENCY_COUNTRY: Record<string, string> = Object.fromEntries(
 export function resolveRegion(user: { country: string | null; currency: string | null }): Region {
   const savedCurrency = user.currency?.trim().toUpperCase() || null;
   const country =
-    user.country?.trim().toUpperCase() || (savedCurrency && CURRENCY_COUNTRY[savedCurrency]) || 'US';
+    user.country?.trim().toUpperCase() ||
+    (savedCurrency && (CURRENCY_COUNTRY[savedCurrency] ?? AFRICAN_SHARED_CURRENCY_COUNTRY[savedCurrency])) ||
+    'US';
   const currency = savedCurrency ?? COUNTRY_CURRENCY[country] ?? 'USD';
   return { country, currency };
 }

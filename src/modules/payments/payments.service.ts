@@ -1,10 +1,11 @@
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, gt, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db/client.js';
 import {
   appointments,
   labResults,
   orderCheckouts,
+  PAYMENT_METHODS,
   PAYMENT_PROVIDERS,
   paymentWebhookEvents,
   payments,
@@ -21,7 +22,7 @@ import { isDuplicateKeyError } from '../../lib/db-errors.js';
 import { AppError, badRequest, conflict, notFound, unprocessable } from '../../lib/errors.js';
 import { newId, paymentReference } from '../../lib/ids.js';
 import { logger } from '../../lib/logger.js';
-import { round2, toMinorUnits } from '../../lib/money.js';
+import { fromMinorUnits, round2, toMinorUnits } from '../../lib/money.js';
 import { realtime } from '../../realtime/gateway.js';
 import { reserveSlotForPayment } from '../appointments/appointments.service.js';
 import { orderSurcharge } from '../pricing/fees.js';
@@ -42,32 +43,54 @@ export const initializePaymentSchema = z.discriminatedUnion('purpose', [
     purpose: z.literal('appointment'),
     referenceId: z.string().min(1).max(36),
     provider: z.enum(PAYMENT_PROVIDERS),
+    method: z.enum(PAYMENT_METHODS).default('card'),
   }),
   z.object({
     purpose: z.literal('order_checkout'),
     referenceId: z.string().min(1).max(36),
     provider: z.enum(PAYMENT_PROVIDERS),
+    method: z.enum(PAYMENT_METHODS).default('card'),
   }),
   z.object({
     purpose: z.literal('lab_result'),
     referenceId: z.string().min(1).max(36),
     provider: z.enum(PAYMENT_PROVIDERS),
+    method: z.enum(PAYMENT_METHODS).default('card'),
   }),
   z.object({
     purpose: z.literal('wallet_topup'),
     amount: z.number().min(100).max(5_000_000),
     provider: z.enum(PAYMENT_PROVIDERS),
+    method: z.enum(PAYMENT_METHODS).default('card'),
   }),
 ]);
 export type InitializePaymentInput = z.infer<typeof initializePaymentSchema>;
 
+/** Paystack "Pay with Transfer": how long the temporary account accepts money. */
+export const BANK_TRANSFER_WINDOW_MINUTES = 30;
+/** Transfers can land a little after the window closes; wait this long before expiring the payment. */
+export const BANK_TRANSFER_GRACE_MINUTES = 15;
+/** Paystack's Pay with Transfer is NGN-only. */
+const BANK_TRANSFER_CURRENCIES = new Set(['NGN']);
+
+/** Still worth asking the provider about: pending, or an expired transfer whose money may yet land. */
+const awaitingMoney = (p: Pick<PaymentRow, 'status' | 'method'>) =>
+  p.status === 'pending' || (p.status === 'cancelled' && p.method === 'bank_transfer');
+
+const bankTransferAction = (p: Pick<PaymentRow, 'metadata'>) => {
+  const action = (p.metadata as { clientAction?: ClientAction } | null)?.clientAction;
+  return action?.type === 'bank_transfer' ? action : null;
+};
+
 export function serializePayment(p: PaymentRow) {
+  const transfer = bankTransferAction(p);
   return {
     id: p.id,
     reference: p.reference,
     purpose: p.purpose,
     purposeRefId: p.purposeRefId,
     provider: p.provider,
+    method: p.method,
     status: p.status,
     baseAmount: p.baseAmount,
     surcharge: p.surcharge,
@@ -75,6 +98,16 @@ export function serializePayment(p: PaymentRow) {
     currency: p.currency,
     failureReason: p.failureReason,
     paidAt: p.paidAt,
+    /** Present for bank transfers, so the app can re-open the account details screen. */
+    bankTransfer: transfer
+      ? {
+          accountName: transfer.accountName,
+          accountNumber: transfer.accountNumber,
+          bankName: transfer.bankName,
+          expiresAt: transfer.expiresAt,
+          customerConfirmedAt: p.customerConfirmedAt,
+        }
+      : null,
     createdAt: p.createdAt,
   };
 }
@@ -104,7 +137,11 @@ async function resolvePayable(userId: string, input: InitializePaymentInput): Pr
       if (a.status === 'cancelled') throw unprocessable('APPOINTMENT_CANCELLED', 'This appointment was cancelled');
       if (!a.currency || a.price <= 0) throw unprocessable('NOT_PAYABLE', 'This appointment has no payable amount');
       if (a.startTime <= new Date()) throw unprocessable('APPOINTMENT_STARTED', 'This appointment slot has passed; please rebook');
-      await reserveSlotForPayment(a.id);
+      // A bank transfer can take the whole transfer window: hold the slot until it closes.
+      await reserveSlotForPayment(
+        a.id,
+        input.method === 'bank_transfer' ? BANK_TRANSFER_WINDOW_MINUTES + BANK_TRANSFER_GRACE_MINUTES : undefined,
+      );
       return {
         purposeRefId: a.id,
         baseAmount: a.price,
@@ -159,7 +196,19 @@ async function resolvePayable(userId: string, input: InitializePaymentInput): Pr
 export async function initializePayment(userId: string, input: InitializePaymentInput, idempotencyKey?: string) {
   if (idempotencyKey) {
     const existing = await findByIdempotencyKey(userId, idempotencyKey);
-    if (existing) return existing;
+    if (existing) {
+      // A previous request can fail before the provider has supplied its
+      // checkout action. Never present that incomplete record as a successful
+      // initialization response.
+      if (existing.payment.status === 'pending' && !existing.clientAction) {
+        throw new AppError(
+          503,
+          'PAYMENT_INITIALIZATION_INTERRUPTED',
+          'Payment initialization was interrupted. Please try again.',
+        );
+      }
+      return existing;
+    }
   }
 
   const [user] = await db
@@ -168,7 +217,26 @@ export async function initializePayment(userId: string, input: InitializePayment
     .where(eq(users.id, userId));
   if (!user) throw notFound('User');
 
+  if (input.method === 'bank_transfer' && input.provider !== 'paystack') {
+    throw unprocessable('METHOD_NOT_SUPPORTED', 'Bank transfer is only available with Paystack');
+  }
+  if (input.method === 'bank_transfer') {
+    // Re-show the account already issued for this purchase instead of opening a second one
+    // (a customer paying into both would be charged twice).
+    const live = await findLiveBankTransfer(userId, input);
+    if (live) return live;
+  }
+
   const payable = await resolvePayable(userId, input);
+  if (input.method === 'bank_transfer' && !BANK_TRANSFER_CURRENCIES.has(payable.currency)) {
+    throw unprocessable('METHOD_NOT_SUPPORTED', `Bank transfer is only available for payments in NGN (this one is ${payable.currency})`);
+  }
+  const transferExpiresAt =
+    input.method === 'bank_transfer' ? new Date(Date.now() + BANK_TRANSFER_WINDOW_MINUTES * 60_000) : null;
+  // Validate provider configuration before creating a local payment row. This
+  // prevents a missing test credential from leaving a pending payment with no
+  // clientAction for a retried idempotent request.
+  const provider = getPaymentProvider(input.provider);
   const amount = round2(payable.baseAmount + payable.surcharge);
   const payment: typeof payments.$inferInsert = {
     id: newId(),
@@ -177,7 +245,9 @@ export async function initializePayment(userId: string, input: InitializePayment
     purpose: input.purpose,
     purposeRefId: payable.purposeRefId,
     provider: input.provider,
+    method: input.method,
     status: 'pending',
+    expiresAt: transferExpiresAt,
     baseAmount: payable.baseAmount,
     surcharge: payable.surcharge,
     amount,
@@ -196,7 +266,6 @@ export async function initializePayment(userId: string, input: InitializePayment
     throw err;
   }
 
-  const provider = getPaymentProvider(input.provider);
   try {
     const result = await provider.initialize({
       reference: payment.reference,
@@ -206,10 +275,22 @@ export async function initializePayment(userId: string, input: InitializePayment
       customer: { email: user.email, name: `${user.firstName} ${user.lastName}`.trim() },
       description: payable.description,
       metadata: { purpose: input.purpose, purposeRefId: payable.purposeRefId ?? '', userId },
+      method: input.method,
+      transferExpiresAt: transferExpiresAt?.toISOString(),
     });
+    const providerFeeMinor = Math.max(0, (result.collectAmountMinor ?? payment.amountMinor) - payment.amountMinor);
+    const providerFee = fromMinorUnits(providerFeeMinor, payable.currency);
     await db
       .update(payments)
-      .set({ providerReference: result.providerReference, metadata: { clientAction: result.clientAction } })
+      .set({
+        providerReference: result.providerReference,
+        metadata: { clientAction: result.clientAction },
+        ...(providerFeeMinor > 0 && {
+          surcharge: round2(payable.surcharge + providerFee),
+          amount: round2(amount + providerFee),
+          amountMinor: payment.amountMinor + providerFeeMinor,
+        }),
+      })
       .where(eq(payments.id, payment.id));
     const [row] = await db.select().from(payments).where(eq(payments.id, payment.id));
     return { payment: serializePayment(row!), clientAction: result.clientAction };
@@ -220,6 +301,30 @@ export async function initializePayment(userId: string, input: InitializePayment
     logger.error({ err, reference: payment.reference }, 'Payment initialization failed');
     throw new AppError(502, 'PAYMENT_PROVIDER_ERROR', 'Could not start the payment. Please try again.');
   }
+}
+
+/** A still-open bank transfer for the same purchase (not for wallet top-ups, whose amount varies). */
+async function findLiveBankTransfer(userId: string, input: InitializePaymentInput) {
+  if (input.purpose === 'wallet_topup') return null;
+  const [row] = await db
+    .select()
+    .from(payments)
+    .where(
+      and(
+        eq(payments.userId, userId),
+        eq(payments.purpose, input.purpose),
+        eq(payments.purposeRefId, input.referenceId),
+        eq(payments.method, 'bank_transfer'),
+        eq(payments.status, 'pending'),
+        isNotNull(payments.providerReference),
+        // Leave the customer at least a few minutes to complete the transfer.
+        gt(payments.expiresAt, new Date(Date.now() + 5 * 60_000)),
+      ),
+    )
+    .orderBy(desc(payments.createdAt))
+    .limit(1);
+  const action = row ? bankTransferAction(row) : null;
+  return row && action ? { payment: serializePayment(row), clientAction: action } : null;
 }
 
 async function findByIdempotencyKey(userId: string, key: string) {
@@ -248,9 +353,51 @@ export async function getPayment(userId: string, reference: string) {
 /** Client-triggered status check (e.g. after the payment sheet/redirect closes). */
 export async function verifyPayment(userId: string, reference: string) {
   const payment = await getPayment(userId, reference);
-  if (payment.status !== 'pending') return serializePayment(payment);
-  const result = await getPaymentProvider(payment.provider).verify(payment);
-  return serializePayment(await settle(payment.id, result));
+  if (!awaitingMoney(payment)) return serializePayment(payment);
+  let result: VerifyResult;
+  try {
+    result = await getPaymentProvider(payment.provider).verify(payment);
+  } catch (err) {
+    if (!(err instanceof ProviderError)) throw err;
+    logger.warn({ err, reference }, 'Payment status check failed');
+    throw new AppError(502, 'PAYMENT_PROVIDER_ERROR', 'Could not check the payment status. Please try again.');
+  }
+  const settled = await settle(payment.id, result);
+  return serializePayment(settled.status === 'pending' ? await expireIfLapsed(settled) : settled);
+}
+
+/**
+ * "I've sent the money" on the bank-transfer screen. Records the claim (useful
+ * for support if the transfer never arrives) and checks with Paystack at once.
+ * The `charge.success` webhook confirms the payment whenever the money lands.
+ */
+export async function confirmTransferSent(userId: string, reference: string) {
+  const payment = await getPayment(userId, reference);
+  if (payment.method !== 'bank_transfer') {
+    throw unprocessable('NOT_BANK_TRANSFER', 'This payment is not a bank transfer');
+  }
+  if (payment.status === 'pending' && !payment.customerConfirmedAt) {
+    await db.update(payments).set({ customerConfirmedAt: new Date() }).where(eq(payments.id, payment.id));
+  }
+  try {
+    return await verifyPayment(userId, reference);
+  } catch (err) {
+    if (!(err instanceof AppError && err.code === 'PAYMENT_PROVIDER_ERROR')) throw err;
+    return serializePayment(await getPayment(userId, reference));
+  }
+}
+
+/** Closes a bank transfer whose account window (plus grace) has passed with no money received. */
+async function expireIfLapsed(payment: PaymentRow): Promise<PaymentRow> {
+  if (payment.method !== 'bank_transfer' || !payment.expiresAt) return payment;
+  if (payment.expiresAt.getTime() + BANK_TRANSFER_GRACE_MINUTES * 60_000 > Date.now()) return payment;
+  const failureReason = 'The transfer window expired before the payment arrived';
+  await db
+    .update(payments)
+    .set({ status: 'cancelled', failureReason })
+    .where(and(eq(payments.id, payment.id), eq(payments.status, 'pending')));
+  const [row] = await db.select().from(payments).where(eq(payments.id, payment.id));
+  return row!;
 }
 
 /**
@@ -268,7 +415,11 @@ export async function settle(paymentId: string, result: VerifyResult): Promise<P
   const settled = await db.transaction(async (tx) => {
     const [payment] = await tx.select().from(payments).where(eq(payments.id, paymentId)).for('update');
     if (!payment) throw notFound('Payment');
-    if (payment.status !== 'pending') return payment; // Already settled: idempotent no-op.
+    // Already settled: idempotent no-op. The one exception: a bank transfer we expired
+    // whose money still arrived. Money received is honoured, never dropped.
+    const lateTransfer = payment.status === 'cancelled' && payment.method === 'bank_transfer' && result.outcome === 'succeeded';
+    if (payment.status !== 'pending' && !lateTransfer) return payment;
+    if (lateTransfer) logger.warn({ reference: payment.reference }, 'Bank transfer arrived after the payment was expired; settling it');
 
     if (result.outcome === 'failed') {
       await tx
@@ -374,7 +525,7 @@ async function processWebhookEvent(providerName: PaymentProviderName, eventRowId
         .from(payments)
         .where(and(eq(payments.reference, reference), eq(payments.provider, providerName)))
         .limit(1);
-      if (payment && payment.status === 'pending') {
+      if (payment && awaitingMoney(payment)) {
         const result = await getPaymentProvider(providerName).verify(payment);
         await settle(payment.id, result);
       }

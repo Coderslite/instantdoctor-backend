@@ -24,6 +24,7 @@ appointmentsRouter.post('/', requireRole('user'), idempotent('appointments.creat
     currentUser(req).userId,
     input,
     req.idempotencyKey,
+    req.get('x-timezone'),
   );
   res.status(created ? 201 : 200).json(appointment);
 });

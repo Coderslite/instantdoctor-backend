@@ -14,6 +14,9 @@ import { coordinate, createdAt, id, money, timestamp, updatedAt } from '../colum
 export const USER_ROLES = ['user', 'doctor'] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
+/** `pending_verification`: registered with email/password but the emailed code is not yet confirmed. */
+export const REGISTRATION_STATUSES = ['pending_verification', 'active'] as const;
+
 export const users = mysqlTable(
   'users',
   {
@@ -26,6 +29,7 @@ export const users = mysqlTable(
      */
     legacyAuth: boolean('legacy_auth').notNull().default(false),
     role: mysqlEnum('role', USER_ROLES).notNull().default('user'),
+    registrationStatus: mysqlEnum('registration_status', REGISTRATION_STATUSES).notNull().default('active'),
 
     firstName: varchar('first_name', { length: 100 }).notNull().default(''),
     lastName: varchar('last_name', { length: 100 }).notNull().default(''),
@@ -138,6 +142,7 @@ export const savedLocations = mysqlTable(
 );
 
 export const ADMIN_ROLES = ['admin', 'marketer'] as const;
+export type AdminRole = (typeof ADMIN_ROLES)[number];
 
 export const admins = mysqlTable(
   'admins',

@@ -1,17 +1,27 @@
-import { and, count, desc, eq, isNotNull, lte, ne, sql } from 'drizzle-orm';
+import { and, count, desc, eq, ne, sql } from 'drizzle-orm';
 import { db } from '../../db/client.js';
-import { healthTipCategories, healthTipLikes, healthTipViews, healthTips } from '../../db/schema/index.js';
+import {
+  healthTipCategories,
+  healthTipLikes,
+  healthTipViews,
+  healthTips,
+} from '../../db/schema/index.js';
 import { affectedRows } from '../../lib/db-errors.js';
 import { notFound } from '../../lib/errors.js';
+import { isLive } from '../blog/blog.service.js';
 
-const published = () => and(isNotNull(healthTips.publishedAt), lte(healthTips.publishedAt, new Date()));
+/** Drafts and scheduled posts stay hidden from the app until they go live. */
+const published = isLive;
 
 const summary = {
   id: healthTips.id,
   categoryId: healthTips.categoryId,
   title: healthTips.title,
   slug: healthTips.slug,
+  excerpt: healthTips.excerpt,
   image: healthTips.image,
+  imageAlt: healthTips.imageAlt,
+  readingMinutes: healthTips.readingMinutes,
   type: healthTips.type,
   views: healthTips.views,
   publishedAt: healthTips.publishedAt,
@@ -35,7 +45,9 @@ export function listTips(query: { categoryId?: string; limit: number; offset: nu
   return db
     .select(summary)
     .from(healthTips)
-    .where(and(published(), query.categoryId ? eq(healthTips.categoryId, query.categoryId) : undefined))
+    .where(
+      and(published(), query.categoryId ? eq(healthTips.categoryId, query.categoryId) : undefined),
+    )
     .orderBy(desc(healthTips.publishedAt))
     .limit(query.limit)
     .offset(query.offset);
@@ -43,12 +55,19 @@ export function listTips(query: { categoryId?: string; limit: number; offset: nu
 
 /** Returns the full article and records a unique view for the reader. */
 export async function readTip(userId: string, tipId: string) {
-  const [tip] = await db.select().from(healthTips).where(and(eq(healthTips.id, tipId), published())).limit(1);
+  const [tip] = await db
+    .select()
+    .from(healthTips)
+    .where(and(eq(healthTips.id, tipId), published()))
+    .limit(1);
   if (!tip) throw notFound('Health tip');
 
   const inserted = await db.insert(healthTipViews).ignore().values({ healthTipId: tipId, userId });
   if (affectedRows(inserted) > 0) {
-    await db.update(healthTips).set({ views: sql`${healthTips.views} + 1` }).where(eq(healthTips.id, tipId));
+    await db
+      .update(healthTips)
+      .set({ views: sql`${healthTips.views} + 1` })
+      .where(eq(healthTips.id, tipId));
     tip.views += 1;
   }
   const [[likes], [mine]] = await Promise.all([
@@ -62,7 +81,10 @@ export async function readTip(userId: string, tipId: string) {
 }
 
 export async function relatedTips(tipId: string, limit = 5) {
-  const [tip] = await db.select({ categoryId: healthTips.categoryId }).from(healthTips).where(eq(healthTips.id, tipId));
+  const [tip] = await db
+    .select({ categoryId: healthTips.categoryId })
+    .from(healthTips)
+    .where(eq(healthTips.id, tipId));
   if (!tip?.categoryId) return [];
   return db
     .select(summary)
@@ -78,7 +100,10 @@ export async function toggleLike(userId: string, tipId: string) {
     .delete(healthTipLikes)
     .where(and(eq(healthTipLikes.healthTipId, tipId), eq(healthTipLikes.userId, userId)));
   if (affectedRows(removed) > 0) return { liked: false };
-  const [exists] = await db.select({ id: healthTips.id }).from(healthTips).where(eq(healthTips.id, tipId));
+  const [exists] = await db
+    .select({ id: healthTips.id })
+    .from(healthTips)
+    .where(eq(healthTips.id, tipId));
   if (!exists) throw notFound('Health tip');
   await db.insert(healthTipLikes).ignore().values({ healthTipId: tipId, userId });
   return { liked: true };

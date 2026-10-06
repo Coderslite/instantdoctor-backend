@@ -1,8 +1,13 @@
-import { OpenAPIRegistry, OpenApiGeneratorV31, type RouteConfig } from '@asteasolutions/zod-to-openapi';
+import {
+  OpenAPIRegistry,
+  OpenApiGeneratorV31,
+  type RouteConfig,
+} from '@asteasolutions/zod-to-openapi';
 import { z } from 'zod';
 import { PAYMENT_PROVIDERS } from '../db/schema/index.js';
 import { paginationQuery } from '../lib/pagination.js';
 import { askQuestionSchema } from '../modules/anonymous/anonymous.schemas.js';
+import * as blog from '../modules/blog/blog.schemas.js';
 import * as appointments from '../modules/appointments/appointments.schemas.js';
 import * as auth from '../modules/auth/auth.schemas.js';
 import { listDoctorsQuery } from '../modules/doctors/doctors.schemas.js';
@@ -25,7 +30,8 @@ registry.registerComponent('securitySchemes', 'bearerAuth', {
   type: 'http',
   scheme: 'bearer',
   bearerFormat: 'JWT',
-  description: 'Access token from /auth/login, /auth/register, /auth/google, /auth/apple or /auth/refresh.',
+  description:
+    'Access token from /auth/login, /auth/register/verify, /auth/google, /auth/apple or /auth/refresh.',
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -52,10 +58,13 @@ interface Operation {
 }
 
 const idParam = z.object({ id: z.string().meta({ example: 'E7lvcmYH7Ks38oEDCKm8' }) });
-const referenceParam = z.object({ reference: z.string().meta({ example: 'IDP_20261003_K7Q2M9XA4P' }) });
+const referenceParam = z.object({
+  reference: z.string().meta({ example: 'IDP_20261003_K7Q2M9XA4P' }),
+});
 const idempotencyHeader = z.object({
   'Idempotency-Key': z.string().min(8).max(128).meta({
-    description: 'Unique per user intent (e.g. a UUID created when the button is first tapped). Reuse it for every retry.',
+    description:
+      'Unique per user intent (e.g. a UUID created when the button is first tapped). Reuse it for every retry.',
     example: '3f1c9a8e-5b0d-4c1e-9a77-2f4d6b8c1e20',
   }),
 });
@@ -79,18 +88,23 @@ const toOpenApiPath = (path: string) => path.replace(/:([A-Za-z]+)/g, '{$1}');
 export const documentedOperations = new Set<string>();
 
 function op(method: Method, path: string, o: Operation) {
-  const fullPath = path === '/health' ? path : `/v1${path}`;
+  const fullPath = path === '/health' ? path : `/api/v1${path}`;
   documentedOperations.add(`${method.toUpperCase()} ${fullPath}`);
 
   const responses: RouteConfig['responses'] = {};
   for (const [status, schema] of Object.entries(o.ok)) {
     responses[status] = schema
-      ? { description: STATUS_TEXT[Number(status)] ?? 'Success', content: { 'application/json': { schema } } }
+      ? {
+          description: STATUS_TEXT[Number(status)] ?? 'Success',
+          content: { 'application/json': { schema } },
+        }
       : { description: STATUS_TEXT[Number(status)] ?? 'Success' };
   }
   const isAuthed = o.auth !== false;
   const errors: NonNullable<Operation['errors']> = {
-    ...(o.body || o.query ? { 400: 'BAD_REQUEST — validation failed; `details` lists each field' } : {}),
+    ...(o.body || o.query
+      ? { 400: 'BAD_REQUEST — validation failed; `details` lists each field' }
+      : {}),
     ...(isAuthed ? { 401: 'UNAUTHORIZED — missing or expired access token' } : {}),
     ...(o.role ? { 403: `FORBIDDEN — requires role "${o.role}"` } : {}),
     ...(o.idempotent
@@ -116,7 +130,9 @@ function op(method: Method, path: string, o: Operation) {
   const notes = [
     o.description,
     o.role ? `**Role:** ${o.role}.` : undefined,
-    o.idempotent ? '**Idempotent:** requires `Idempotency-Key`; a retry with the same key and body replays the original response with `Idempotent-Replayed: true`.' : undefined,
+    o.idempotent
+      ? '**Idempotent:** requires `Idempotency-Key`; a retry with the same key and body replays the original response with `Idempotent-Replayed: true`.'
+      : undefined,
   ].filter(Boolean);
 
   registry.registerPath({
@@ -138,21 +154,51 @@ function op(method: Method, path: string, o: Operation) {
 
 // ─── System ──────────────────────────────────────────────────────────────────
 
-op('get', '/health', { tag: 'System', summary: 'Liveness + database check', auth: false, ok: { 200: z.object({ status: z.literal('ok') }) } });
+op('get', '/health', {
+  tag: 'System',
+  summary: 'Liveness + database check',
+  auth: false,
+  ok: { 200: z.object({ status: z.literal('ok') }) },
+});
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
-op('post', '/auth/check-email', { tag: 'Auth', summary: 'Check whether an email is free to register', auth: false, body: auth.checkEmailSchema, ok: { 200: c.Availability } });
-op('post', '/auth/otp', {
+op('post', '/auth/check-email', {
   tag: 'Auth',
-  summary: 'Email a 5-digit verification code',
-  description: 'For `login`/`password_reset` the response is identical whether or not the account exists. Codes expire after 10 minutes; max 5 attempts; one request per minute.',
+  summary: 'Check whether an email is free to register',
   auth: false,
-  body: auth.requestOtpSchema,
-  ok: { 202: z.object({ message: z.string() }) },
-  errors: { 409: 'EMAIL_TAKEN (register) | OTP_RATE_LIMITED' },
+  body: auth.checkEmailSchema,
+  ok: { 200: c.Availability },
 });
-op('post', '/auth/register', { tag: 'Auth', summary: 'Create an account (requires a register OTP)', auth: false, body: auth.registerSchema, ok: { 201: c.AuthResult }, errors: { 409: 'EMAIL_TAKEN' } });
+op('post', '/auth/register', {
+  tag: 'Auth',
+  summary: 'Sign up — step 1: create the account and email a verification code',
+  description:
+    'Creates the account as `pending_verification` and emails a 5-digit code (valid 10 minutes, 5 attempts). No session is returned yet — confirm the code with `POST /auth/register/verify`. Registering again with an email that is still pending replaces the earlier details and sends a new code.',
+  auth: false,
+  body: auth.registerSchema,
+  ok: { 201: c.PendingRegistration },
+  errors: {
+    409: 'EMAIL_TAKEN — a verified account exists | OTP_RATE_LIMITED — retry after a minute',
+  },
+});
+op('post', '/auth/register/verify', {
+  tag: 'Auth',
+  summary: 'Sign up — step 2: confirm the code; returns the user and a session',
+  auth: false,
+  body: auth.verifyRegistrationSchema,
+  ok: { 200: c.AuthResult },
+  errors: { 400: 'BAD_REQUEST — invalid or expired code', 409: 'ALREADY_VERIFIED' },
+});
+op('post', '/auth/register/resend', {
+  tag: 'Auth',
+  summary: 'Resend the sign-up verification code',
+  description: 'Responds identically whether or not a sign-up is pending for the email.',
+  auth: false,
+  body: auth.emailOnlySchema,
+  ok: { 202: z.object({ message: z.string() }) },
+  errors: { 409: 'OTP_RATE_LIMITED' },
+});
 op('post', '/auth/login', {
   tag: 'Auth',
   summary: 'Sign in with email and password',
@@ -160,11 +206,15 @@ op('post', '/auth/login', {
   auth: false,
   body: auth.loginSchema,
   ok: { 200: c.AuthResult },
+  errors: {
+    403: 'EMAIL_NOT_VERIFIED — sign-up not confirmed; call /auth/register/resend then /auth/register/verify',
+  },
 });
 op('post', '/auth/google', {
   tag: 'Auth',
   summary: 'Sign in with a Google ID token',
-  description: 'Links by Google account id, then by verified email; otherwise creates an account (`isNewUser: true`).',
+  description:
+    'Links by Google account id, then by verified email; otherwise creates an account (`isNewUser: true`).',
   auth: false,
   body: auth.googleSchema,
   ok: { 200: c.AuthResult },
@@ -182,30 +232,147 @@ op('post', '/auth/apple', {
 op('post', '/auth/refresh', {
   tag: 'Auth',
   summary: 'Rotate the refresh token and get a new access token',
-  description: 'Each refresh token is single-use. Re-using an old one revokes the whole session family.',
+  description:
+    'Each refresh token is single-use. Re-using an old one revokes the whole session family.',
   auth: false,
   body: auth.refreshSchema,
   ok: { 200: z.object({ session: c.Session }) },
 });
-op('post', '/auth/logout', { tag: 'Auth', summary: 'Revoke a refresh token', auth: false, body: auth.refreshSchema, ok: { 204: null } });
-op('post', '/auth/password/reset', { tag: 'Auth', summary: 'Reset password with a password_reset OTP', auth: false, body: auth.resetPasswordSchema, ok: { 204: null } });
-op('post', '/auth/password/change', { tag: 'Auth', summary: 'Change password (signs out other sessions)', body: auth.changePasswordSchema, ok: { 204: null } });
+op('post', '/auth/logout', {
+  tag: 'Auth',
+  summary: 'Revoke a refresh token',
+  auth: false,
+  body: auth.refreshSchema,
+  ok: { 204: null },
+});
+op('post', '/auth/password/forgot', {
+  tag: 'Auth',
+  summary: 'Password reset — step 1: email a 5-digit reset code',
+  description:
+    'Responds identically whether or not the account exists. The code is valid for 10 minutes (5 attempts); at most one code per minute.',
+  auth: false,
+  body: auth.emailOnlySchema,
+  ok: { 202: z.object({ message: z.string() }) },
+  errors: { 409: 'OTP_RATE_LIMITED' },
+});
+op('post', '/auth/password/verify-code', {
+  tag: 'Auth',
+  summary: 'Password reset — step 2: verify the code, get a reset token',
+  description:
+    'Returns a single-use `resetToken` valid for 15 minutes. Show the new-password screen only after this succeeds.',
+  auth: false,
+  body: auth.verifyResetCodeSchema,
+  ok: { 200: c.PasswordResetToken },
+  errors: { 400: 'BAD_REQUEST — invalid or expired code' },
+});
+op('post', '/auth/password/reset', {
+  tag: 'Auth',
+  summary: 'Password reset — step 3: set the new password',
+  description:
+    'Consumes the reset token and signs the account out of every device. The user then logs in with the new password.',
+  auth: false,
+  body: auth.resetPasswordSchema,
+  ok: { 204: null },
+  errors: { 400: 'BAD_REQUEST — reset token expired or already used' },
+});
+op('post', '/auth/password/change', {
+  tag: 'Auth',
+  summary: 'Change password (signs out other sessions)',
+  body: auth.changePasswordSchema,
+  ok: { 204: null },
+});
 
 // ─── Users ───────────────────────────────────────────────────────────────────
 
 op('get', '/users/me', { tag: 'Users', summary: 'My profile', ok: { 200: c.Me } });
-op('patch', '/users/me', { tag: 'Users', summary: 'Update my profile, region and medical details', body: users.updateProfileSchema, ok: { 200: c.Me } });
-op('put', '/users/me/fcm-token', { tag: 'Users', summary: 'Register (or clear) this device’s FCM push token', body: users.fcmTokenSchema, ok: { 204: null } });
-op('put', '/users/me/presence', { tag: 'Users', summary: 'Set presence (online / offline / away)', body: users.presenceSchema, ok: { 204: null } });
-op('get', '/users/me/saved-locations', { tag: 'Users', summary: 'My saved delivery locations', ok: { 200: c.ItemsOf(c.SavedLocation, 'SavedLocation') } });
-op('post', '/users/me/saved-locations', { tag: 'Users', summary: 'Save a location', body: users.savedLocationSchema, ok: { 201: c.SavedLocation } });
-op('delete', '/users/me/saved-locations/:id', { tag: 'Users', summary: 'Delete a saved location', params: idParam, ok: { 204: null } });
-op('get', '/users/tags/:tag/availability', { tag: 'Users', summary: 'Is a referral username free?', params: users.tagSchema, ok: { 200: c.Availability } });
-op('post', '/users/me/referral-program', { tag: 'Users', summary: 'Join the referral programme with a username', body: users.tagSchema, ok: { 200: c.Me }, errors: { 409: 'TAG_TAKEN' } });
+op('patch', '/users/me', {
+  tag: 'Users',
+  summary: 'Update my profile, region and medical details',
+  body: users.updateProfileSchema,
+  ok: { 200: c.Me },
+});
+op('put', '/users/me/fcm-token', {
+  tag: 'Users',
+  summary: 'Register (or clear) this device’s FCM push token',
+  body: users.fcmTokenSchema,
+  ok: { 204: null },
+});
+op('put', '/users/me/presence', {
+  tag: 'Users',
+  summary: 'Set presence (online / offline / away)',
+  body: users.presenceSchema,
+  ok: { 204: null },
+});
+op('get', '/users/me/saved-locations', {
+  tag: 'Users',
+  summary: 'My saved delivery locations',
+  ok: { 200: c.ItemsOf(c.SavedLocation, 'SavedLocation') },
+});
+op('post', '/users/me/saved-locations', {
+  tag: 'Users',
+  summary: 'Save a location',
+  body: users.savedLocationSchema,
+  ok: { 201: c.SavedLocation },
+});
+op('delete', '/users/me/saved-locations/:id', {
+  tag: 'Users',
+  summary: 'Delete a saved location',
+  params: idParam,
+  ok: { 204: null },
+});
+op('get', '/users/tags/:tag/availability', {
+  tag: 'Users',
+  summary: 'Is a referral username free?',
+  params: users.tagSchema,
+  ok: { 200: c.Availability },
+});
+op('post', '/users/me/referral-program', {
+  tag: 'Users',
+  summary: 'Join the referral programme with a username',
+  body: users.tagSchema,
+  ok: { 200: c.Me },
+  errors: { 409: 'TAG_TAKEN' },
+});
+op('get', '/users/me/payout-account', {
+  tag: 'Users',
+  summary: 'My payout bank account',
+  ok: { 200: c.PayoutAccount },
+  errors: { 404: 'NOT_FOUND — no payout account saved yet' },
+});
+op('put', '/users/me/payout-account', {
+  tag: 'Users',
+  summary: 'Save or replace my payout bank account',
+  body: users.payoutAccountSchema,
+  ok: { 200: c.PayoutAccount },
+});
+op('delete', '/users/me/payout-account', {
+  tag: 'Users',
+  summary: 'Remove my payout bank account',
+  ok: { 204: null },
+});
+op('get', '/users/me/referral', {
+  tag: 'Users',
+  summary: 'Who referred me, and whether I can still enter a referral code',
+  ok: { 200: c.MyReferral },
+});
+op('post', '/users/me/referral', {
+  tag: 'Users',
+  summary: 'Enter a referral code after sign-up',
+  description:
+    'For users who signed up without a code (e.g. via Google/Apple). Allowed once, within 7 days of sign-up and before the first paid consultation — the referrer earns their commission on that consultation.',
+  body: users.applyReferralSchema,
+  ok: { 200: c.MyReferral },
+  errors: {
+    400: 'Unknown code, or your own code',
+    409: 'ALREADY_REFERRED',
+    422: 'REFERRAL_WINDOW_CLOSED',
+  },
+});
 op('get', '/users/:id', {
   tag: 'Users',
   summary: 'Public summary of a user',
-  description: 'Doctors are visible to everyone; patients only to doctors they share an appointment with.',
+  description:
+    'Doctors are visible to everyone; patients only to doctors they share an appointment with.',
   params: idParam,
   ok: { 200: c.UserSummary },
   errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND' },
@@ -213,14 +380,40 @@ op('get', '/users/:id', {
 
 // ─── Doctors ─────────────────────────────────────────────────────────────────
 
-op('get', '/doctors', { tag: 'Doctors', summary: 'Available doctors, most recently active first', query: listDoctorsQuery, ok: { 200: c.ItemsOf(c.Doctor, 'Doctor') } });
-op('get', '/doctors/least-busy', { tag: 'Doctors', summary: 'Active doctor with the fewest consultations in the last 24h', ok: { 200: c.Doctor }, errors: { 404: 'NOT_FOUND — nobody available' } });
-op('get', '/doctors/:id', { tag: 'Doctors', summary: 'Doctor profile with rating', params: idParam, ok: { 200: c.Doctor }, errors: { 404: 'NOT_FOUND' } });
-op('get', '/doctors/:id/reviews', { tag: 'Doctors', summary: 'Doctor reviews', params: idParam, query: paginationQuery, ok: { 200: c.page(c.DoctorReview, 'DoctorReview') } });
+op('get', '/doctors', {
+  tag: 'Doctors',
+  summary: 'Available doctors, most recently active first',
+  query: listDoctorsQuery,
+  ok: { 200: c.ItemsOf(c.Doctor, 'Doctor') },
+});
+op('get', '/doctors/least-busy', {
+  tag: 'Doctors',
+  summary: 'Active doctor with the fewest consultations in the last 24h',
+  ok: { 200: c.Doctor },
+  errors: { 404: 'NOT_FOUND — nobody available' },
+});
+op('get', '/doctors/:id', {
+  tag: 'Doctors',
+  summary: 'Doctor profile with rating',
+  params: idParam,
+  ok: { 200: c.Doctor },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('get', '/doctors/:id/reviews', {
+  tag: 'Doctors',
+  summary: 'Doctor reviews',
+  params: idParam,
+  query: paginationQuery,
+  ok: { 200: c.page(c.DoctorReview, 'DoctorReview') },
+});
 
 // ─── Appointments ────────────────────────────────────────────────────────────
 
-op('get', '/appointments/packages', { tag: 'Appointments', summary: 'Consultation packages priced for my region', ok: { 200: c.ItemsOf(c.AppointmentPackage, 'AppointmentPackage') } });
+op('get', '/appointments/packages', {
+  tag: 'Appointments',
+  summary: 'Consultation packages priced for my region',
+  ok: { 200: c.ItemsOf(c.AppointmentPackage, 'AppointmentPackage') },
+});
 op('post', '/appointments', {
   tag: 'Appointments',
   summary: 'Book an appointment',
@@ -228,6 +421,7 @@ op('post', '/appointments', {
     'Omit `doctorId` to create an **open request** that any doctor can accept after payment (the app’s default flow). With `doctorId`, the doctor’s calendar is checked under a lock so a slot can never be double-booked.',
     'The price is computed server-side from the package and your region. Pay with `POST /payments { purpose: "appointment", referenceId }`. Unpaid bookings hold the slot for 30 minutes.',
     '`isTrial: true` books the free trial (once per user); it is confirmed immediately with no payment.',
+    "Send the `X-Timezone` header (IANA name, e.g. `Africa/Lagos`) so confirmation and status emails show times in the patient's zone.",
   ].join('\n\n'),
   role: 'user',
   idempotent: true,
@@ -238,14 +432,38 @@ op('post', '/appointments', {
     422: 'DOCTOR_UNAVAILABLE | TRIAL_DISABLED',
   },
 });
-op('get', '/appointments', { tag: 'Appointments', summary: 'My appointments (patients: booked; doctors: assigned)', query: appointments.listAppointmentsQuery, ok: { 200: c.page(c.Appointment, 'Appointment') } });
-op('get', '/appointments/open', { tag: 'Appointments', summary: 'Paid open requests awaiting a doctor', role: 'doctor', query: appointments.listAppointmentsQuery, ok: { 200: c.page(c.Appointment, 'Appointment') } });
-op('get', '/appointments/:id', { tag: 'Appointments', summary: 'Appointment details', params: idParam, ok: { 200: c.Appointment }, errors: { 404: 'NOT_FOUND' } });
-op('delete', '/appointments/:id', { tag: 'Appointments', summary: 'Remove an appointment from my list (soft delete)', params: idParam, ok: { 204: null }, errors: { 403: 'FORBIDDEN — patients only', 404: 'NOT_FOUND' } });
+op('get', '/appointments', {
+  tag: 'Appointments',
+  summary: 'My appointments (patients: booked; doctors: assigned)',
+  query: appointments.listAppointmentsQuery,
+  ok: { 200: c.page(c.Appointment, 'Appointment') },
+});
+op('get', '/appointments/open', {
+  tag: 'Appointments',
+  summary: 'Paid open requests awaiting a doctor',
+  role: 'doctor',
+  query: appointments.listAppointmentsQuery,
+  ok: { 200: c.page(c.Appointment, 'Appointment') },
+});
+op('get', '/appointments/:id', {
+  tag: 'Appointments',
+  summary: 'Appointment details',
+  params: idParam,
+  ok: { 200: c.Appointment },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('delete', '/appointments/:id', {
+  tag: 'Appointments',
+  summary: 'Remove an appointment from my list (soft delete)',
+  params: idParam,
+  ok: { 204: null },
+  errors: { 403: 'FORBIDDEN — patients only', 404: 'NOT_FOUND' },
+});
 op('post', '/appointments/:id/accept', {
   tag: 'Appointments',
   summary: 'Accept a paid booking',
-  description: 'Atomically claims an open request (exactly one doctor wins) or accepts one addressed to you. Fails if it overlaps your calendar.',
+  description:
+    'Atomically claims an open request (exactly one doctor wins) or accepts one addressed to you. Fails if it overlaps your calendar.',
   role: 'doctor',
   params: idParam,
   ok: { 200: c.Appointment },
@@ -272,7 +490,8 @@ op('get', '/appointments/:id/messages', {
 op('post', '/appointments/:id/messages', {
   tag: 'Chat',
   summary: 'Send a message',
-  description: 'For attachments, upload first via `POST /uploads?folder=chat` and send the returned `url` as `fileUrl`.',
+  description:
+    'For attachments, upload first via `POST /uploads?folder=chat` and send the returned `url` as `fileUrl`.',
   params: idParam,
   body: appointments.sendMessageSchema,
   ok: { 201: c.Message },
@@ -286,13 +505,43 @@ op('patch', '/appointments/:id/messages/:messageId', {
   ok: { 200: c.Message },
   errors: { 403: 'FORBIDDEN — not your message', 422: 'MESSAGE_DELETED' },
 });
-op('delete', '/appointments/:id/messages/:messageId', { tag: 'Chat', summary: 'Delete my message (content is removed)', params: z.object({ id: z.string(), messageId: z.string() }), ok: { 204: null } });
-op('post', '/appointments/:id/messages/read', { tag: 'Chat', summary: 'Mark the other participant’s messages as read', params: idParam, ok: { 204: null } });
-op('get', '/appointments/:id/messages/unread-count', { tag: 'Chat', summary: 'Unread messages from the other participant', params: idParam, ok: { 200: c.Count } });
+op('delete', '/appointments/:id/messages/:messageId', {
+  tag: 'Chat',
+  summary: 'Delete my message (content is removed)',
+  params: z.object({ id: z.string(), messageId: z.string() }),
+  ok: { 204: null },
+});
+op('post', '/appointments/:id/messages/read', {
+  tag: 'Chat',
+  summary: 'Mark the other participant’s messages as read',
+  params: idParam,
+  ok: { 204: null },
+});
+op('get', '/appointments/:id/messages/unread-count', {
+  tag: 'Chat',
+  summary: 'Unread messages from the other participant',
+  params: idParam,
+  ok: { 200: c.Count },
+});
 
-op('get', '/appointments/:id/prescriptions', { tag: 'Clinical', summary: 'Prescriptions for an appointment', params: idParam, ok: { 200: c.ItemsOf(c.Prescription, 'Prescription') } });
-op('post', '/prescriptions/:id/seen', { tag: 'Clinical', summary: 'Mark a prescription as seen', params: idParam, ok: { 204: null } });
-op('get', '/appointments/:id/review', { tag: 'Clinical', summary: 'My review of this appointment, if any', params: idParam, ok: { 200: z.object({ review: c.Review.nullable() }) } });
+op('get', '/appointments/:id/prescriptions', {
+  tag: 'Clinical',
+  summary: 'Prescriptions for an appointment',
+  params: idParam,
+  ok: { 200: c.ItemsOf(c.Prescription, 'Prescription') },
+});
+op('post', '/prescriptions/:id/seen', {
+  tag: 'Clinical',
+  summary: 'Mark a prescription as seen',
+  params: idParam,
+  ok: { 204: null },
+});
+op('get', '/appointments/:id/review', {
+  tag: 'Clinical',
+  summary: 'My review of this appointment, if any',
+  params: idParam,
+  ok: { 200: z.object({ review: c.Review.nullable() }) },
+});
 op('post', '/appointments/:id/review', {
   tag: 'Clinical',
   summary: 'Rate the doctor (once per appointment)',
@@ -302,11 +551,38 @@ op('post', '/appointments/:id/review', {
   ok: { 201: c.Review },
   errors: { 409: 'ALREADY_REVIEWED', 422: 'NOT_PAID | NOT_ASSIGNED' },
 });
-op('post', '/reports', { tag: 'Clinical', summary: 'Report a problem with an appointment', body: reports.createReportSchema, ok: { 201: c.Report }, errors: { 409: 'ALREADY_REPORTED' } });
-op('get', '/reports', { tag: 'Clinical', summary: 'My reports (optionally for one appointment)', query: reports.listReportsQuery, ok: { 200: c.ItemsOf(c.Report, 'Report') } });
-op('get', '/reports/:id/messages', { tag: 'Clinical', summary: 'Support conversation for a report', params: idParam, ok: { 200: c.ItemsOf(c.ReportMessage, 'ReportMessage') } });
-op('post', '/reports/:id/messages', { tag: 'Clinical', summary: 'Reply on a report', params: idParam, body: reports.reportMessageSchema, ok: { 201: c.ReportMessage } });
-op('delete', '/reports/:id', { tag: 'Clinical', summary: 'Delete a report and its conversation', params: idParam, ok: { 204: null } });
+op('post', '/reports', {
+  tag: 'Clinical',
+  summary: 'Report a problem with an appointment',
+  body: reports.createReportSchema,
+  ok: { 201: c.Report },
+  errors: { 409: 'ALREADY_REPORTED' },
+});
+op('get', '/reports', {
+  tag: 'Clinical',
+  summary: 'My reports (optionally for one appointment)',
+  query: reports.listReportsQuery,
+  ok: { 200: c.ItemsOf(c.Report, 'Report') },
+});
+op('get', '/reports/:id/messages', {
+  tag: 'Clinical',
+  summary: 'Support conversation for a report',
+  params: idParam,
+  ok: { 200: c.ItemsOf(c.ReportMessage, 'ReportMessage') },
+});
+op('post', '/reports/:id/messages', {
+  tag: 'Clinical',
+  summary: 'Reply on a report',
+  params: idParam,
+  body: reports.reportMessageSchema,
+  ok: { 201: c.ReportMessage },
+});
+op('delete', '/reports/:id', {
+  tag: 'Clinical',
+  summary: 'Delete a report and its conversation',
+  params: idParam,
+  ok: { 204: null },
+});
 
 // ─── Payments ────────────────────────────────────────────────────────────────
 
@@ -316,6 +592,7 @@ op('post', '/payments', {
   description: [
     'The amount is derived from server-side state (appointment, checkout, lab result) — never from the client. `wallet_topup` takes an NGN `amount`.',
     'Follow `clientAction`: present the Stripe payment sheet with `clientSecret`, or open `authorizationUrl` for Paystack/Flutterwave. Then call `POST /payments/{reference}/verify`.',
+    '**Paystack methods.** `method: "card"` opens Paystack checkout limited to cards. `method: "bank_transfer"` (NGN only) returns a `bank_transfer` action with a temporary account valid for 30 minutes: show its details and an "I\'ve sent the money" button that calls `POST /payments/{reference}/transfer-sent`. Asking again for the same purchase returns the same account while it is still open.',
   ].join('\n\n'),
   idempotent: true,
   body: initializePaymentSchema,
@@ -323,18 +600,33 @@ op('post', '/payments', {
   errors: {
     404: 'NOT_FOUND — target does not exist or is not yours',
     409: 'ALREADY_PAID | SLOT_UNAVAILABLE',
-    422: 'NO_PAYMENT_REQUIRED | APPOINTMENT_STARTED | APPOINTMENT_CANCELLED | CURRENCY_NOT_SUPPORTED',
+    422: 'NO_PAYMENT_REQUIRED | APPOINTMENT_STARTED | APPOINTMENT_CANCELLED | CURRENCY_NOT_SUPPORTED | METHOD_NOT_SUPPORTED (bank transfer outside Paystack/NGN)',
     502: 'PAYMENT_PROVIDER_ERROR',
     503: 'SERVICE_UNAVAILABLE — provider not configured',
   },
 });
-op('get', '/payments/:reference', { tag: 'Payments', summary: 'Payment status', params: referenceParam, ok: { 200: c.Payment } });
+op('get', '/payments/:reference', {
+  tag: 'Payments',
+  summary: 'Payment status',
+  params: referenceParam,
+  ok: { 200: c.Payment },
+});
 op('post', '/payments/:reference/verify', {
   tag: 'Payments',
   summary: 'Confirm a payment with the provider',
-  description: 'Call after the payment sheet / checkout closes. Safe to call repeatedly; the purchase is fulfilled exactly once. A short capture is marked `failed`.',
+  description:
+    'Call after the payment sheet / checkout closes. Safe to call repeatedly; the purchase is fulfilled exactly once. A short capture is marked `failed`.',
   params: referenceParam,
   ok: { 200: c.Payment },
+});
+op('post', '/payments/:reference/transfer-sent', {
+  tag: 'Payments',
+  summary: 'Bank transfer: the customer has sent the money',
+  description:
+    'Records the confirmation and checks with Paystack immediately. If the money has not landed yet the payment stays `pending`; show a "confirming your transfer" state and wait for `payment:updated` (or poll `GET /payments/{reference}`). Once the window plus a 15-minute grace passes without money, the payment becomes `cancelled`; a transfer that still arrives later is honoured.',
+  params: referenceParam,
+  ok: { 200: c.Payment },
+  errors: { 404: 'NOT_FOUND', 422: 'NOT_BANK_TRANSFER' },
 });
 op('post', '/webhooks/:provider', {
   tag: 'Payments',
@@ -349,7 +641,12 @@ op('post', '/webhooks/:provider', {
 });
 
 op('get', '/wallet', { tag: 'Wallet', summary: 'My wallet balance (NGN)', ok: { 200: c.Wallet } });
-op('get', '/wallet/transactions', { tag: 'Wallet', summary: 'Wallet history', query: listTransactionsQuery, ok: { 200: c.page(c.WalletTransaction, 'WalletTransaction') } });
+op('get', '/wallet/transactions', {
+  tag: 'Wallet',
+  summary: 'Wallet history',
+  query: listTransactionsQuery,
+  ok: { 200: c.page(c.WalletTransaction, 'WalletTransaction') },
+});
 op('post', '/wallet/transfers', {
   tag: 'Wallet',
   summary: 'Send funds to another user by email',
@@ -358,16 +655,49 @@ op('post', '/wallet/transfers', {
   ok: { 201: c.TransferResult },
   errors: { 400: 'No user with that email / cannot send to yourself', 422: 'INSUFFICIENT_FUNDS' },
 });
-op('get', '/referrals', { tag: 'Wallet', summary: 'People I referred in a month (default: current)', query: listReferralsQuery, ok: { 200: c.ItemsOf(c.Referral, 'Referral') } });
-op('get', '/referrals/summary', { tag: 'Wallet', summary: 'Referral totals and balance', ok: { 200: c.ReferralSummary } });
+op('get', '/referrals', {
+  tag: 'Wallet',
+  summary: 'People I referred in a month (default: current)',
+  query: listReferralsQuery,
+  ok: { 200: c.ItemsOf(c.Referral, 'Referral') },
+});
+op('get', '/referrals/summary', {
+  tag: 'Wallet',
+  summary: 'Referral totals and balance',
+  ok: { 200: c.ReferralSummary },
+});
 
 // ─── Pharmacy ────────────────────────────────────────────────────────────────
 
-op('get', '/pharmacies', { tag: 'Pharmacy', summary: 'Pharmacies (nearest first when a location is given)', query: pharmacy.nearbyQuery, ok: { 200: c.ItemsOf(c.Pharmacy, 'Pharmacy') } });
-op('get', '/pharmacies/:id', { tag: 'Pharmacy', summary: 'Pharmacy details', params: idParam, ok: { 200: c.Pharmacy } });
-op('get', '/pharmacies/:id/products', { tag: 'Pharmacy', summary: 'A pharmacy’s products', params: idParam, ok: { 200: c.ItemsOf(c.Product, 'Product') } });
-op('get', '/products/categories', { tag: 'Pharmacy', summary: 'Product categories', ok: { 200: c.ItemsOf(c.ProductCategory, 'ProductCategory') } });
-op('get', '/products/:id', { tag: 'Pharmacy', summary: 'Product details', params: idParam, ok: { 200: c.Product } });
+op('get', '/pharmacies', {
+  tag: 'Pharmacy',
+  summary: 'Pharmacies (nearest first when a location is given)',
+  query: pharmacy.nearbyQuery,
+  ok: { 200: c.ItemsOf(c.Pharmacy, 'Pharmacy') },
+});
+op('get', '/pharmacies/:id', {
+  tag: 'Pharmacy',
+  summary: 'Pharmacy details',
+  params: idParam,
+  ok: { 200: c.Pharmacy },
+});
+op('get', '/pharmacies/:id/products', {
+  tag: 'Pharmacy',
+  summary: 'A pharmacy’s products',
+  params: idParam,
+  ok: { 200: c.ItemsOf(c.Product, 'Product') },
+});
+op('get', '/products/categories', {
+  tag: 'Pharmacy',
+  summary: 'Product categories',
+  ok: { 200: c.ItemsOf(c.ProductCategory, 'ProductCategory') },
+});
+op('get', '/products/:id', {
+  tag: 'Pharmacy',
+  summary: 'Product details',
+  params: idParam,
+  ok: { 200: c.Product },
+});
 op('post', '/orders/quote', {
   tag: 'Pharmacy',
   summary: 'Price a cart (delivery fees + surcharge) without ordering',
@@ -383,60 +713,382 @@ op('post', '/orders/checkout', {
   ok: { 201: c.Checkout, 200: c.Checkout },
   errors: { 422: 'OUT_OF_STOCK | PHARMACY_NOT_DELIVERABLE' },
 });
-op('get', '/orders', { tag: 'Pharmacy', summary: 'My orders', query: pharmacy.listOrdersQuery, ok: { 200: c.page(c.Order, 'Order') } });
-op('get', '/orders/:id', { tag: 'Pharmacy', summary: 'Order details and tracking status', params: idParam, ok: { 200: c.Order } });
+op('get', '/orders', {
+  tag: 'Pharmacy',
+  summary: 'My orders',
+  query: pharmacy.listOrdersQuery,
+  ok: { 200: c.page(c.Order, 'Order') },
+});
+op('get', '/orders/:id', {
+  tag: 'Pharmacy',
+  summary: 'Order details and tracking status',
+  params: idParam,
+  ok: { 200: c.Order },
+});
 
 // ─── Health ──────────────────────────────────────────────────────────────────
 
-op('get', '/lab-results/price', { tag: 'Health', summary: 'Lab result interpretation price for my region', ok: { 200: c.Quote } });
+op('get', '/lab-results/price', {
+  tag: 'Health',
+  summary: 'Lab result interpretation price for my region',
+  ok: { 200: c.Quote },
+});
 op('post', '/lab-results', {
   tag: 'Health',
   summary: 'Submit lab result files for interpretation',
-  description: 'Upload files first (`POST /uploads?folder=lab-results`). Pay with `POST /payments { purpose: "lab_result" }`.',
+  description:
+    'Upload files first (`POST /uploads?folder=lab-results`). Pay with `POST /payments { purpose: "lab_result" }`.',
   idempotent: true,
   body: createLabResultSchema,
   ok: { 201: c.LabResult },
 });
-op('get', '/lab-results', { tag: 'Health', summary: 'My lab results', ok: { 200: c.ItemsOf(c.LabResult, 'LabResult') } });
-op('post', '/lab-results/:id/opened', { tag: 'Health', summary: 'Mark a result as opened', params: idParam, ok: { 204: null } });
-op('delete', '/lab-results/:id', { tag: 'Health', summary: 'Delete a lab result', params: idParam, ok: { 204: null } });
+op('get', '/lab-results', {
+  tag: 'Health',
+  summary: 'My lab results',
+  ok: { 200: c.ItemsOf(c.LabResult, 'LabResult') },
+});
+op('post', '/lab-results/:id/opened', {
+  tag: 'Health',
+  summary: 'Mark a result as opened',
+  params: idParam,
+  ok: { 204: null },
+});
+op('delete', '/lab-results/:id', {
+  tag: 'Health',
+  summary: 'Delete a lab result',
+  params: idParam,
+  ok: { 204: null },
+});
 
-op('get', '/medications', { tag: 'Health', summary: 'My medication schedules with dose history', ok: { 200: c.ItemsOf(c.Medication, 'Medication') } });
-op('post', '/medications', { tag: 'Health', summary: 'Add a medication schedule', body: medications.medicationSchema, ok: { 201: c.Medication } });
-op('get', '/medications/:id', { tag: 'Health', summary: 'Medication details', params: idParam, ok: { 200: c.Medication } });
-op('patch', '/medications/:id', { tag: 'Health', summary: 'Update a medication schedule', params: idParam, body: medications.updateMedicationSchema, ok: { 200: c.Medication } });
-op('delete', '/medications/:id', { tag: 'Health', summary: 'Delete a medication schedule', params: idParam, ok: { 204: null } });
-op('put', '/medications/:id/doses', { tag: 'Health', summary: 'Mark a dose as taken or missed', params: idParam, body: medications.doseSchema, ok: { 200: c.Medication } });
+op('get', '/medications', {
+  tag: 'Health',
+  summary: 'My medication schedules with dose history',
+  ok: { 200: c.ItemsOf(c.Medication, 'Medication') },
+});
+op('post', '/medications', {
+  tag: 'Health',
+  summary: 'Add a medication schedule',
+  body: medications.medicationSchema,
+  ok: { 201: c.Medication },
+});
+op('get', '/medications/:id', {
+  tag: 'Health',
+  summary: 'Medication details',
+  params: idParam,
+  ok: { 200: c.Medication },
+});
+op('patch', '/medications/:id', {
+  tag: 'Health',
+  summary: 'Update a medication schedule',
+  params: idParam,
+  body: medications.updateMedicationSchema,
+  ok: { 200: c.Medication },
+});
+op('delete', '/medications/:id', {
+  tag: 'Health',
+  summary: 'Delete a medication schedule',
+  params: idParam,
+  ok: { 204: null },
+});
+op('put', '/medications/:id/doses', {
+  tag: 'Health',
+  summary: 'Mark a dose as taken or missed',
+  params: idParam,
+  body: medications.doseSchema,
+  ok: { 200: c.Medication },
+});
 
 // ─── Content ─────────────────────────────────────────────────────────────────
 
-op('get', '/health-tips/categories', { tag: 'Content', summary: 'Health tip categories with article counts', ok: { 200: c.ItemsOf(c.HealthTipCategory, 'HealthTipCategory') } });
-op('get', '/health-tips', { tag: 'Content', summary: 'Published health tips', query: listTipsQuery, ok: { 200: c.page(c.HealthTipSummary, 'HealthTipSummary') } });
-op('get', '/health-tips/:id', { tag: 'Content', summary: 'Read a health tip (records a unique view)', params: idParam, ok: { 200: c.HealthTip } });
-op('get', '/health-tips/:id/related', { tag: 'Content', summary: 'Related tips from the same category', params: idParam, ok: { 200: c.ItemsOf(c.HealthTipSummary, 'HealthTipSummary') } });
-op('post', '/health-tips/:id/like', { tag: 'Content', summary: 'Toggle my like', params: idParam, ok: { 200: c.LikeState } });
-op('get', '/anonymous-questions', { tag: 'Content', summary: 'My anonymous questions', ok: { 200: c.ItemsOf(c.AnonymousQuestion, 'AnonymousQuestion') } });
-op('post', '/anonymous-questions', { tag: 'Content', summary: 'Ask a doctor anonymously', body: askQuestionSchema, ok: { 201: c.AnonymousQuestion } });
-op('delete', '/anonymous-questions/:id', { tag: 'Content', summary: 'Delete my question', params: idParam, ok: { 204: null } });
+op('get', '/health-tips/categories', {
+  tag: 'Content',
+  summary: 'Health tip categories with article counts',
+  ok: { 200: c.ItemsOf(c.HealthTipCategory, 'HealthTipCategory') },
+});
+op('get', '/health-tips', {
+  tag: 'Content',
+  summary: 'Published health tips',
+  query: listTipsQuery,
+  ok: { 200: c.page(c.HealthTipSummary, 'HealthTipSummary') },
+});
+op('get', '/health-tips/:id', {
+  tag: 'Content',
+  summary: 'Read a health tip (records a unique view)',
+  params: idParam,
+  ok: { 200: c.HealthTip },
+});
+op('get', '/health-tips/:id/related', {
+  tag: 'Content',
+  summary: 'Related tips from the same category',
+  params: idParam,
+  ok: { 200: c.ItemsOf(c.HealthTipSummary, 'HealthTipSummary') },
+});
+op('post', '/health-tips/:id/like', {
+  tag: 'Content',
+  summary: 'Toggle my like',
+  params: idParam,
+  ok: { 200: c.LikeState },
+});
+op('get', '/anonymous-questions', {
+  tag: 'Content',
+  summary: 'My anonymous questions',
+  ok: { 200: c.ItemsOf(c.AnonymousQuestion, 'AnonymousQuestion') },
+});
+op('post', '/anonymous-questions', {
+  tag: 'Content',
+  summary: 'Ask a doctor anonymously',
+  body: askQuestionSchema,
+  ok: { 201: c.AnonymousQuestion },
+});
+op('delete', '/anonymous-questions/:id', {
+  tag: 'Content',
+  summary: 'Delete my question',
+  params: idParam,
+  ok: { 204: null },
+});
+
+// ─── Blog (public) ───────────────────────────────────────────────────────────
+
+const slugParam = z.object({
+  slug: z.string().meta({ example: 'how-to-lower-blood-pressure-naturally' }),
+});
+const PUBLIC =
+  'Responses are cacheable (`Cache-Control: public`); only live posts (published, not scheduled for later) are returned.';
+op('get', '/blog/posts', {
+  tag: 'Blog',
+  summary: 'Live posts, newest first',
+  description: `Filter by category, tag or author slug, or search with \`q\`. Posts marked noindex are left out. ${PUBLIC}`,
+  auth: false,
+  query: blog.publicListQuery,
+  ok: { 200: c.BlogPostPage },
+});
+op('get', '/blog/posts/:slug', {
+  tag: 'Blog',
+  summary: 'A live post with its author, reviewer, related posts and neighbours',
+  description: `Also accepts a post id, so legacy links can be resolved and redirected to the slug. ${PUBLIC}`,
+  auth: false,
+  params: slugParam,
+  ok: { 200: c.BlogPost },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('post', '/blog/posts/:slug/view', {
+  tag: 'Blog',
+  summary: 'Count a page view',
+  description: 'Rate limited per IP. Does not change `updatedAt`.',
+  auth: false,
+  params: slugParam,
+  ok: { 200: z.object({ counted: z.boolean() }) },
+});
+op('get', '/blog/categories', {
+  tag: 'Blog',
+  summary: 'Categories with live post counts',
+  auth: false,
+  ok: { 200: c.ItemsOf(c.BlogCategory, 'BlogCategory') },
+});
+op('get', '/blog/categories/:slug', {
+  tag: 'Blog',
+  summary: 'A category with its SEO fields',
+  auth: false,
+  params: slugParam,
+  ok: { 200: c.BlogCategoryDetail },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('get', '/blog/authors/:slug', {
+  tag: 'Blog',
+  summary: 'An author profile',
+  auth: false,
+  params: slugParam,
+  ok: { 200: c.BlogAuthor.extend({ postCount: z.number().int() }) },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('get', '/blog/tags', {
+  tag: 'Blog',
+  summary: 'Tags on live posts, most used first',
+  auth: false,
+  ok: { 200: c.ItemsOf(c.BlogTag, 'BlogTag') },
+});
+op('get', '/blog/sitemap', {
+  tag: 'Blog',
+  summary: 'Every indexable post, category and author with last-modified dates',
+  description: 'Feeds the website sitemaps and RSS feed.',
+  auth: false,
+  ok: { 200: c.BlogSitemap },
+});
+
+// ─── Blog (admin) ────────────────────────────────────────────────────────────
+
+const ADMIN =
+  'Requires an **admin** access token (from /admin/auth/login). Writes need the `admin` or `marketer` role.';
+const adminWrite = { 403: 'FORBIDDEN — requires the admin or marketer role' } as const;
+op('get', '/admin/blog/posts', {
+  tag: 'Blog admin',
+  summary: 'All posts with status counts',
+  description: ADMIN,
+  query: blog.adminPostsQuery,
+  ok: { 200: c.AdminBlogPostPage },
+});
+op('get', '/admin/blog/posts/:id', {
+  tag: 'Blog admin',
+  summary: 'A post for editing',
+  description: ADMIN,
+  params: idParam,
+  ok: { 200: c.AdminBlogPost },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('post', '/admin/blog/posts', {
+  tag: 'Blog admin',
+  summary: 'Create a post',
+  description: `${ADMIN}\n\nThe body HTML is sanitised. A blank slug is derived from the title; a blank excerpt is generated. Publishing without \`publishedAt\` publishes now; a future date schedules the post.`,
+  body: blog.postSchema,
+  ok: { 201: c.AdminBlogPost },
+  errors: { ...adminWrite, 409: 'SLUG_TAKEN' },
+});
+op('patch', '/admin/blog/posts/:id', {
+  tag: 'Blog admin',
+  summary: 'Update a post',
+  description: `${ADMIN}\n\nOnly the fields sent are changed.`,
+  params: idParam,
+  body: blog.updatePostSchema,
+  ok: { 200: c.AdminBlogPost },
+  errors: { ...adminWrite, 404: 'NOT_FOUND', 409: 'SLUG_TAKEN' },
+});
+op('delete', '/admin/blog/posts/:id', {
+  tag: 'Blog admin',
+  summary: 'Delete a post',
+  description: ADMIN,
+  params: idParam,
+  ok: { 200: c.Deleted },
+  errors: { ...adminWrite, 404: 'NOT_FOUND' },
+});
+op('get', '/admin/blog/categories', {
+  tag: 'Blog admin',
+  summary: 'Categories with post counts',
+  description: ADMIN,
+  ok: { 200: c.ItemsOf(c.AdminBlogCategory, 'AdminBlogCategory') },
+});
+op('post', '/admin/blog/categories', {
+  tag: 'Blog admin',
+  summary: 'Create a category',
+  description: ADMIN,
+  body: blog.categorySchema,
+  ok: { 201: c.BlogCategoryDetail },
+  errors: { ...adminWrite, 409: 'SLUG_TAKEN' },
+});
+op('patch', '/admin/blog/categories/:id', {
+  tag: 'Blog admin',
+  summary: 'Update a category',
+  description: ADMIN,
+  params: idParam,
+  body: blog.updateCategorySchema,
+  ok: { 200: c.BlogCategoryDetail },
+  errors: { ...adminWrite, 404: 'NOT_FOUND', 409: 'SLUG_TAKEN' },
+});
+op('delete', '/admin/blog/categories/:id', {
+  tag: 'Blog admin',
+  summary: 'Delete a category (its posts become uncategorised)',
+  description: ADMIN,
+  params: idParam,
+  ok: { 200: c.Deleted },
+  errors: { ...adminWrite, 404: 'NOT_FOUND' },
+});
+op('get', '/admin/blog/authors', {
+  tag: 'Blog admin',
+  summary: 'Authors and reviewers with post counts',
+  description: ADMIN,
+  ok: { 200: c.ItemsOf(c.AdminBlogAuthor, 'AdminBlogAuthor') },
+});
+op('post', '/admin/blog/authors', {
+  tag: 'Blog admin',
+  summary: 'Create an author',
+  description: ADMIN,
+  body: blog.authorSchema,
+  ok: { 201: c.BlogAuthor },
+  errors: { ...adminWrite, 409: 'SLUG_TAKEN' },
+});
+op('patch', '/admin/blog/authors/:id', {
+  tag: 'Blog admin',
+  summary: 'Update an author',
+  description: ADMIN,
+  params: idParam,
+  body: blog.updateAuthorSchema,
+  ok: { 200: c.BlogAuthor },
+  errors: { ...adminWrite, 404: 'NOT_FOUND', 409: 'SLUG_TAKEN' },
+});
+op('delete', '/admin/blog/authors/:id', {
+  tag: 'Blog admin',
+  summary: 'Delete an author (their posts fall back to the team byline)',
+  description: ADMIN,
+  params: idParam,
+  ok: { 200: c.Deleted },
+  errors: { ...adminWrite, 404: 'NOT_FOUND' },
+});
+op('post', '/admin/blog/uploads', {
+  tag: 'Blog admin',
+  summary: 'Upload a blog image (PNG, JPEG, GIF or WebP)',
+  description: ADMIN,
+  body: { multipart: z.object({ file: z.string().meta({ format: 'binary' }) }) },
+  ok: { 201: c.StoredFile },
+  errors: { ...adminWrite, 502: 'STORAGE_ERROR — upload to storage failed; retry' },
+});
 
 // ─── Misc ────────────────────────────────────────────────────────────────────
 
-op('get', '/notifications', { tag: 'Notifications', summary: 'My notifications, newest first', query: paginationQuery, ok: { 200: c.page(c.Notification, 'Notification') } });
-op('get', '/notifications/unread-count', { tag: 'Notifications', summary: 'Unread notification count', ok: { 200: c.Count } });
-op('post', '/notifications/read-all', { tag: 'Notifications', summary: 'Mark all notifications as read', ok: { 204: null } });
-op('post', '/waitlist', { tag: 'Misc', summary: 'Join the delivery waitlist for an area', body: joinWaitlistSchema, ok: { 201: c.WaitlistEntry } });
-op('get', '/waitlist/status', { tag: 'Misc', summary: 'Have I joined the waitlist for this location?', query: waitlistStatusQuery, ok: { 200: z.object({ joined: z.boolean() }) } });
+op('get', '/notifications', {
+  tag: 'Notifications',
+  summary: 'My notifications, newest first',
+  query: paginationQuery,
+  ok: { 200: c.page(c.Notification, 'Notification') },
+});
+op('get', '/notifications/unread-count', {
+  tag: 'Notifications',
+  summary: 'Unread notification count',
+  ok: { 200: c.Count },
+});
+op('post', '/notifications/read-all', {
+  tag: 'Notifications',
+  summary: 'Mark all notifications as read',
+  ok: { 204: null },
+});
+op('post', '/waitlist', {
+  tag: 'Misc',
+  summary: 'Join the delivery waitlist for an area',
+  body: joinWaitlistSchema,
+  ok: { 201: c.WaitlistEntry },
+});
+op('get', '/waitlist/status', {
+  tag: 'Misc',
+  summary: 'Have I joined the waitlist for this location?',
+  query: waitlistStatusQuery,
+  ok: { 200: z.object({ joined: z.boolean() }) },
+});
 op('post', '/uploads', {
   tag: 'Misc',
   summary: 'Upload a file (images, PDF, Word, audio; max 15 MB)',
-  description: 'Returns a URL to use as `fileUrl` in chat, reports or lab results.',
+  description:
+    'Returns a permanent public URL (Cloudflare R2 in production) to use as `fileUrl` in chat, reports or lab results, or as `photoUrl`. Images and PDFs must match their declared type.',
   query: uploadQuery,
   body: { multipart: z.object({ file: z.string().meta({ format: 'binary' }) }) },
   ok: { 201: c.StoredFile },
+  errors: { 502: 'STORAGE_ERROR — upload to storage failed; retry' },
 });
-op('get', '/settings', { tag: 'Misc', summary: 'App settings (feature flags, version, marquee)', auth: false, ok: { 200: c.AppSettings } });
-op('get', '/currencies', { tag: 'Misc', summary: 'Supported currencies', auth: false, ok: { 200: c.ItemsOf(z.object({ code: z.string() }), 'Currency') } });
-op('get', '/video-call/credentials', { tag: 'Misc', summary: 'Active video call (ZEGOCLOUD) credentials', ok: { 200: c.VideoCallCredentials }, errors: { 404: 'NOT_FOUND' } });
+op('get', '/settings', {
+  tag: 'Misc',
+  summary: 'App settings (feature flags, version, marquee)',
+  auth: false,
+  ok: { 200: c.AppSettings },
+});
+op('get', '/currencies', {
+  tag: 'Misc',
+  summary: 'Supported currencies',
+  auth: false,
+  ok: { 200: c.ItemsOf(z.object({ code: z.string() }), 'Currency') },
+});
+op('get', '/video-call/credentials', {
+  tag: 'Misc',
+  summary: 'Active video call (ZEGOCLOUD) credentials',
+  ok: { 200: c.VideoCallCredentials },
+  errors: { 404: 'NOT_FOUND' },
+});
 
 // ─── Document ────────────────────────────────────────────────────────────────
 
@@ -444,7 +1096,7 @@ const OVERVIEW = `
 Core API for the Instant Doctor patient app.
 
 ## Authentication
-Send \`Authorization: Bearer <accessToken>\`. Access tokens expire after ~15 minutes; exchange the refresh token at \`POST /v1/auth/refresh\` (refresh tokens rotate — always store the new one).
+Send \`Authorization: Bearer <accessToken>\`. Access tokens expire after ~15 minutes; exchange the refresh token at \`POST /api/v1/auth/refresh\` (refresh tokens rotate — always store the new one).
 
 ## Errors
 Every error is \`{ "error": { "code", "message", "details?" } }\`. Branch on \`code\`, not on \`message\`.

@@ -12,6 +12,7 @@ import {
   NOTIFICATION_TYPES,
   ORDER_STATUSES,
   PACKAGE_TYPES,
+  PAYMENT_METHODS,
   PAYMENT_PROVIDERS,
   PAYMENT_PURPOSES,
   PAYMENT_STATUSES,
@@ -33,7 +34,10 @@ export const ErrorResponse = z
       details: z.unknown().optional(),
     }),
   })
-  .meta({ id: 'Error', description: 'Every error response has this shape. `code` is stable and machine-readable.' });
+  .meta({
+    id: 'Error',
+    description: 'Every error response has this shape. `code` is stable and machine-readable.',
+  });
 
 export const page = <T extends z.ZodType>(item: T, name: string) =>
   z
@@ -101,14 +105,27 @@ export const Me = z
         surgicalHistory: z.string().nullable(),
       })
       .nullable(),
+    profileCompletion: z
+      .object({
+        complete: z.boolean(),
+        missing: z.array(z.enum(['country', 'phoneNumber'])),
+      })
+      .meta({
+        description:
+          'Fields the user must provide before using the app. `phoneNumber` counts as missing when it is not a valid number for their country. Collect them with PATCH /users/me.',
+      }),
     createdAt: dateTime,
   })
   .meta({ id: 'Me', description: 'The authenticated user’s own profile.' });
 
 export const Session = z
   .object({
-    accessToken: z.string().meta({ description: 'JWT, short-lived (default 15 min). Send as `Authorization: Bearer`.' }),
-    refreshToken: z.string().meta({ description: 'Opaque, rotated on every refresh. Store securely.' }),
+    accessToken: z
+      .string()
+      .meta({ description: 'JWT, short-lived (default 15 min). Send as `Authorization: Bearer`.' }),
+    refreshToken: z
+      .string()
+      .meta({ description: 'Opaque, rotated on every refresh. Store securely.' }),
     tokenType: z.literal('Bearer'),
   })
   .meta({ id: 'Session' });
@@ -117,8 +134,58 @@ export const AuthResult = z
   .object({ user: Me, session: Session, isNewUser: z.boolean().optional() })
   .meta({ id: 'AuthResult' });
 
+export const PendingRegistration = z
+  .object({
+    email: z.email(),
+    status: z.literal('pending_verification'),
+    codeExpiresInSeconds: z.number().int().meta({ example: 600 }),
+  })
+  .meta({
+    id: 'PendingRegistration',
+    description: 'Next: POST /auth/register/verify with the emailed code.',
+  });
+
+export const PasswordResetToken = z
+  .object({
+    resetToken: z.string().meta({ description: 'Single-use; send to POST /auth/password/reset.' }),
+    expiresInSeconds: z.number().int().meta({ example: 900 }),
+  })
+  .meta({ id: 'PasswordResetToken' });
+
+export const PayoutAccount = z
+  .object({
+    bankName: z.string().meta({ example: 'Access Bank' }),
+    bankCode: z.string().nullable().meta({ example: '044' }),
+    accountNumber: z.string().meta({ example: '0123456789' }),
+    accountName: z.string().meta({ example: 'ADA OBI' }),
+    updatedAt: dateTime,
+  })
+  .meta({
+    id: 'PayoutAccount',
+    description: 'Bank account that referral (and doctor) earnings are paid to.',
+  });
+
+export const MyReferral = z
+  .object({
+    referredBy: z
+      .string()
+      .nullable()
+      .meta({ description: 'Referral code already applied, if any.', example: 'ada2024' }),
+    canApplyCode: z.boolean(),
+    applyBefore: dateTime.meta({
+      description: 'End of the window for entering a code (7 days after sign-up).',
+    }),
+  })
+  .meta({ id: 'MyReferral' });
+
 export const SavedLocation = z
-  .object({ id, name: z.string(), address: z.string(), latitude: z.number(), longitude: z.number() })
+  .object({
+    id,
+    name: z.string(),
+    address: z.string(),
+    latitude: z.number(),
+    longitude: z.number(),
+  })
   .meta({ id: 'SavedLocation' });
 
 export const Doctor = z
@@ -164,7 +231,10 @@ export const AppointmentPackage = z
     durationSeconds: z.number().int().meta({ example: 3600 }),
     price: z.object({ amount: money, currency, amountUsd: z.number().meta({ example: 5 }) }),
   })
-  .meta({ id: 'AppointmentPackage', description: 'Priced for the caller’s region (discount + FX applied).' });
+  .meta({
+    id: 'AppointmentPackage',
+    description: 'Priced for the caller’s region (discount + FX applied).',
+  });
 
 export const Appointment = z
   .object({
@@ -172,7 +242,11 @@ export const Appointment = z
     status: z.enum(APPOINTMENT_STATUSES),
     complaint: z.string().nullable(),
     symptoms: z.array(z.string()).meta({ example: ['Fever', 'Headache'] }),
-    package: z.object({ id: id.nullable(), name: z.string(), type: z.enum(PACKAGE_TYPES).nullable() }),
+    package: z.object({
+      id: id.nullable(),
+      name: z.string(),
+      type: z.enum(PACKAGE_TYPES).nullable(),
+    }),
     startTime: dateTime,
     endTime: dateTime,
     price: money,
@@ -195,7 +269,9 @@ export const Message = z
     receiverId: id,
     type: z.enum(MESSAGE_TYPES),
     status: z.enum(MESSAGE_STATUSES),
-    message: z.string().meta({ description: 'Opaque; the app currently sends client-encrypted text.' }),
+    message: z
+      .string()
+      .meta({ description: 'Opaque; the app currently sends client-encrypted text.' }),
     fileUrl: z.string().nullable(),
     repliedToId: id.nullable(),
     repliedText: z.string().nullable(),
@@ -209,15 +285,34 @@ export const Message = z
   .meta({ id: 'Message' });
 
 export const MessagePage = z
-  .object({ items: z.array(Message), nextBefore: nullableDateTime.meta({ description: 'Pass as `before` for the next page.' }) })
+  .object({
+    items: z.array(Message),
+    nextBefore: nullableDateTime.meta({ description: 'Pass as `before` for the next page.' }),
+  })
   .meta({ id: 'MessagePage' });
 
 export const Prescription = z
-  .object({ id, appointmentId: id, userId: id, doctorId: id, prescription: z.string(), seen: z.boolean(), createdAt: dateTime })
+  .object({
+    id,
+    appointmentId: id,
+    userId: id,
+    doctorId: id,
+    prescription: z.string(),
+    seen: z.boolean(),
+    createdAt: dateTime,
+  })
   .meta({ id: 'Prescription' });
 
 export const Review = z
-  .object({ id, appointmentId: id, userId: id, doctorId: id, rating: z.number().int(), review: z.string().nullable(), createdAt: dateTime })
+  .object({
+    id,
+    appointmentId: id,
+    userId: id,
+    doctorId: id,
+    rating: z.number().int(),
+    review: z.string().nullable(),
+    createdAt: dateTime,
+  })
   .meta({ id: 'Review' });
 
 export const Report = z
@@ -262,6 +357,14 @@ export const ClientAction = z
       authorizationUrl: z.url(),
       accessCode: z.string().optional().meta({ description: 'Paystack only.' }),
     }),
+    z.object({
+      type: z.literal('bank_transfer'),
+      accountName: z.string().meta({ example: 'INSTANT DOCTOR CHECKOUT' }),
+      accountNumber: z.string().meta({ example: '1260257501' }),
+      bankName: z.string().meta({ example: 'Wema Bank' }),
+      expiresAt: dateTime.meta({ description: 'The account stops accepting money at this time.' }),
+      displayText: z.string().optional(),
+    }),
   ])
   .meta({ id: 'ClientAction', description: 'What the app must do to let the customer pay.' });
 
@@ -272,6 +375,7 @@ export const Payment = z
     purpose: z.enum(PAYMENT_PURPOSES),
     purposeRefId: id.nullable(),
     provider: z.enum(PAYMENT_PROVIDERS),
+    method: z.enum(PAYMENT_METHODS),
     status: z.enum(PAYMENT_STATUSES),
     baseAmount: money,
     surcharge: money,
@@ -279,6 +383,18 @@ export const Payment = z
     currency,
     failureReason: z.string().nullable(),
     paidAt: nullableDateTime,
+    bankTransfer: z
+      .object({
+        accountName: z.string(),
+        accountNumber: z.string(),
+        bankName: z.string(),
+        expiresAt: dateTime,
+        customerConfirmedAt: nullableDateTime,
+      })
+      .nullable()
+      .meta({
+        description: 'Account details for bank-transfer payments (to re-open the transfer screen).',
+      }),
     createdAt: dateTime,
   })
   .meta({ id: 'Payment' });
@@ -317,12 +433,22 @@ export const Referral = z
     status: z.enum(['active', 'inactive']),
     totalCommissionEarned: money,
     createdAt: dateTime,
-    referredUser: z.object({ id, firstName: z.string(), lastName: z.string(), photoUrl: z.string().nullable() }),
+    referredUser: z.object({
+      id,
+      firstName: z.string(),
+      lastName: z.string(),
+      photoUrl: z.string().nullable(),
+    }),
   })
   .meta({ id: 'Referral' });
 
 export const ReferralSummary = z
-  .object({ tag: z.string().nullable(), referralCount: z.number().int(), totalEarned: money, balance: money })
+  .object({
+    tag: z.string().nullable(),
+    referralCount: z.number().int(),
+    totalEarned: money,
+    balance: money,
+  })
   .meta({ id: 'ReferralSummary' });
 
 // ─── Pharmacy ────────────────────────────────────────────────────────────────
@@ -338,7 +464,10 @@ export const Pharmacy = z
     discount: z.number().int(),
     deliveryFeePerKm: money,
     location: location.nullable(),
-    distanceKm: z.number().nullable().meta({ description: 'Present when latitude/longitude were supplied.' }),
+    distanceKm: z
+      .number()
+      .nullable()
+      .meta({ description: 'Present when latitude/longitude were supplied.' }),
   })
   .meta({ id: 'Pharmacy' });
 
@@ -363,7 +492,16 @@ export const Product = z
 export const ProductCategory = z.object({ id, name: z.string() }).meta({ id: 'ProductCategory' });
 
 export const OrderItem = z
-  .object({ id, orderId: id, productId: id.nullable(), name: z.string(), unitPrice: money, discount: z.number().int(), quantity: z.number().int(), image: z.string().nullable() })
+  .object({
+    id,
+    orderId: id,
+    productId: id.nullable(),
+    name: z.string(),
+    unitPrice: money,
+    discount: z.number().int(),
+    quantity: z.number().int(),
+    image: z.string().nullable(),
+  })
   .meta({ id: 'OrderItem' });
 
 export const Order = z
@@ -397,7 +535,13 @@ export const CartQuote = z
     totalAmount: money,
     amountDue: money.meta({ description: 'What the customer will be charged.' }),
     orders: z.array(
-      z.object({ pharmacyId: id, pharmacyName: z.string(), subtotal: money, deliveryFee: money, totalAmount: money }),
+      z.object({
+        pharmacyId: id,
+        pharmacyName: z.string(),
+        subtotal: money,
+        deliveryFee: money,
+        totalAmount: money,
+      }),
     ),
   })
   .meta({ id: 'CartQuote' });
@@ -417,7 +561,10 @@ export const Checkout = z
     createdAt: dateTime,
     updatedAt: dateTime,
   })
-  .meta({ id: 'Checkout', description: 'Pay with POST /payments { purpose: "order_checkout", referenceId: id }.' });
+  .meta({
+    id: 'Checkout',
+    description: 'Pay with POST /payments { purpose: "order_checkout", referenceId: id }.',
+  });
 
 // ─── Health ──────────────────────────────────────────────────────────────────
 
@@ -453,10 +600,18 @@ export const Medication = z
     middayTime: z.string().nullable(),
     eveningTime: z.string().nullable(),
     intervalHours: z.number().int(),
-    doses: z.array(z.object({ date: z.iso.date(), time: z.string().nullable(), status: z.enum(['taken', 'missed']) })),
+    doses: z.array(
+      z.object({
+        date: z.iso.date(),
+        time: z.string().nullable(),
+        status: z.enum(['taken', 'missed']),
+      }),
+    ),
     takenDates: z.array(z.iso.date()),
     missedDates: z.array(z.iso.date()),
-    dailyTakenTimes: z.record(z.string(), z.array(clock)).meta({ description: 'Keyed by YYYY-MM-DD (legacy app shape).' }),
+    dailyTakenTimes: z
+      .record(z.string(), z.array(clock))
+      .meta({ description: 'Keyed by YYYY-MM-DD (legacy app shape).' }),
     dailyMissedTimes: z.record(z.string(), z.array(clock)),
     createdAt: dateTime,
   })
@@ -489,6 +644,205 @@ export const HealthTip = HealthTipSummary.extend({
   likedByMe: z.boolean(),
 }).meta({ id: 'HealthTip' });
 
+// ─── Blog ────────────────────────────────────────────────────────────────────
+
+const BlogCategoryRef = z
+  .object({ id, name: z.string(), slug: z.string().nullable() })
+  .meta({ id: 'BlogCategoryRef' });
+const BlogAuthorRef = z
+  .object({
+    id,
+    name: z.string(),
+    slug: z.string(),
+    image: z.string().nullable(),
+    jobTitle: z.string().nullable(),
+  })
+  .meta({ id: 'BlogAuthorRef' });
+
+export const BlogAuthor = z
+  .object({
+    id,
+    name: z.string(),
+    slug: z.string(),
+    jobTitle: z
+      .string()
+      .nullable()
+      .meta({
+        description: 'Credentials shown with the byline, e.g. "MBBS, General Practitioner".',
+      }),
+    bio: z.string().nullable(),
+    image: z.string().nullable(),
+    links: z
+      .array(z.string())
+      .meta({ description: 'Profile URLs, emitted as schema.org `sameAs`.' }),
+  })
+  .meta({ id: 'BlogAuthor' });
+
+export const BlogPostSummary = z
+  .object({
+    id,
+    slug: z.string().nullable(),
+    title: z.string(),
+    excerpt: z.string().nullable(),
+    image: z.string().nullable(),
+    imageAlt: z.string().nullable(),
+    tags: z.array(z.string()),
+    featured: z.boolean(),
+    readingMinutes: z.number().int(),
+    views: z.number().int(),
+    publishedAt: nullableDateTime,
+    updatedAt: dateTime,
+    category: BlogCategoryRef.nullable(),
+    author: BlogAuthorRef.nullable(),
+  })
+  .meta({ id: 'BlogPostSummary' });
+
+export const BlogPostPage = z
+  .object({
+    items: z.array(BlogPostSummary),
+    total: z.number().int(),
+    page: z.number().int(),
+    limit: z.number().int(),
+    pages: z.number().int(),
+  })
+  .meta({ id: 'BlogPostPage' });
+
+export const BlogPost = BlogPostSummary.extend({
+  description: z.string().meta({ description: 'Sanitised HTML body.' }),
+  metaTitle: z.string().nullable(),
+  metaDescription: z.string().nullable(),
+  focusKeyword: z.string().nullable(),
+  canonicalUrl: z.string().nullable(),
+  noindex: z.boolean(),
+  reviewedAt: nullableDateTime,
+  category: BlogCategoryRef.extend({ description: z.string().nullable() }).nullable(),
+  author: BlogAuthor.nullable(),
+  reviewer: BlogAuthor.nullable().meta({
+    description: 'Clinician who medically reviewed the article.',
+  }),
+  related: z.array(BlogPostSummary),
+  previous: BlogPostSummary.nullable(),
+  next: BlogPostSummary.nullable(),
+}).meta({ id: 'BlogPost' });
+
+export const BlogCategory = z
+  .object({
+    id,
+    name: z.string(),
+    slug: z.string().nullable(),
+    description: z.string().nullable(),
+    image: z.string().nullable(),
+    postCount: z.number().int(),
+  })
+  .meta({ id: 'BlogCategory' });
+
+export const BlogCategoryDetail = z
+  .object({
+    id,
+    name: z.string(),
+    slug: z.string().nullable(),
+    description: z.string().nullable(),
+    image: z.string().nullable(),
+    metaTitle: z.string().nullable(),
+    metaDescription: z.string().nullable(),
+    sortOrder: z.number().int(),
+  })
+  .meta({ id: 'BlogCategoryDetail' });
+
+export const AdminBlogCategory = BlogCategoryDetail.extend({
+  postCount: z.number().int(),
+  liveCount: z.number().int(),
+}).meta({ id: 'AdminBlogCategory' });
+export const AdminBlogAuthor = BlogAuthor.extend({
+  postCount: z.number().int(),
+  reviewCount: z.number().int(),
+}).meta({ id: 'AdminBlogAuthor' });
+export const BlogTag = z
+  .object({ name: z.string(), slug: z.string(), postCount: z.number().int() })
+  .meta({ id: 'BlogTag' });
+
+const SitemapEntry = z.object({
+  slug: z.string().nullable(),
+  postCount: z.number().int(),
+  updatedAt: nullableDateTime,
+});
+export const BlogSitemap = z
+  .object({
+    posts: z.array(
+      z.object({
+        slug: z.string().nullable(),
+        title: z.string(),
+        excerpt: z.string().nullable(),
+        image: z.string().nullable(),
+        imageAlt: z.string().nullable(),
+        tags: z.array(z.string()),
+        categoryName: z.string().nullable(),
+        authorName: z.string().nullable(),
+        publishedAt: nullableDateTime,
+        updatedAt: dateTime,
+      }),
+    ),
+    categories: z.array(SitemapEntry),
+    authors: z.array(SitemapEntry),
+  })
+  .meta({ id: 'BlogSitemap' });
+
+export const AdminBlogPost = z
+  .object({
+    id,
+    categoryId: id.nullable(),
+    authorId: id.nullable(),
+    reviewerId: id.nullable(),
+    title: z.string(),
+    slug: z.string().nullable(),
+    excerpt: z.string().nullable(),
+    description: z.string(),
+    image: z.string().nullable(),
+    imageAlt: z.string().nullable(),
+    type: z.string(),
+    status: z.enum(['draft', 'published']),
+    featured: z.boolean(),
+    tags: z.array(z.string()),
+    readingMinutes: z.number().int(),
+    metaTitle: z.string().nullable(),
+    metaDescription: z.string().nullable(),
+    focusKeyword: z.string().nullable(),
+    canonicalUrl: z.string().nullable(),
+    noindex: z.boolean(),
+    views: z.number().int(),
+    isSent: z.boolean(),
+    publishedAt: nullableDateTime,
+    reviewedAt: nullableDateTime,
+    createdAt: dateTime,
+    updatedAt: dateTime,
+  })
+  .meta({ id: 'AdminBlogPost' });
+
+export const AdminBlogPostPage = z
+  .object({
+    items: z.array(
+      BlogPostSummary.extend({
+        status: z.enum(['draft', 'scheduled', 'published']),
+        noindex: z.boolean(),
+        focusKeyword: z.string().nullable(),
+        createdAt: dateTime,
+      }),
+    ),
+    total: z.number().int(),
+    limit: z.number().int(),
+    offset: z.number().int(),
+    counts: z.object({
+      all: z.number().int(),
+      draft: z.number().int(),
+      scheduled: z.number().int(),
+      published: z.number().int(),
+      views: z.number().int(),
+    }),
+  })
+  .meta({ id: 'AdminBlogPostPage' });
+
+export const Deleted = z.object({ deleted: z.literal(true) }).meta({ id: 'Deleted' });
+
 export const LikeState = z.object({ liked: z.boolean() }).meta({ id: 'LikeState' });
 
 export const Notification = z
@@ -504,7 +858,14 @@ export const Notification = z
   .meta({ id: 'Notification' });
 
 export const AnonymousQuestion = z
-  .object({ id, userId: id, question: z.string(), answer: z.string().nullable(), status: z.enum(['pending', 'completed']), createdAt: dateTime })
+  .object({
+    id,
+    userId: id,
+    question: z.string(),
+    answer: z.string().nullable(),
+    status: z.enum(['pending', 'completed']),
+    createdAt: dateTime,
+  })
   .meta({ id: 'AnonymousQuestion' });
 
 export const WaitlistEntry = z
@@ -531,5 +892,9 @@ export const AppSettings = z
   .meta({ id: 'AppSettings' });
 
 export const VideoCallCredentials = z
-  .object({ provider: z.string().meta({ example: 'zegocloud' }), appId: z.number().int(), appSign: z.string() })
+  .object({
+    provider: z.string().meta({ example: 'zegocloud' }),
+    appId: z.number().int(),
+    appSign: z.string(),
+  })
   .meta({ id: 'VideoCallCredentials' });

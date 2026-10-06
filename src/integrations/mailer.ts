@@ -1,37 +1,78 @@
+import { eq } from 'drizzle-orm';
 import { env } from '../config/env.js';
+import { db } from '../db/client.js';
+import { users } from '../db/schema/index.js';
 import { logger } from '../lib/logger.js';
+import { deliver } from './mail/transport.js';
+import * as templates from './mail/templates.js';
+import type { CodePurpose, OrderLine, RenderedMail } from './mail/templates.js';
 
-/**
- * Client for the existing mail service (instantdoctorapi `/mail/*`). Email
- * templates and SMTP live there; this service only triggers them. Best-effort.
- */
-async function post(path: string, body: Record<string, string>) {
-  if (!env.MAIL_SERVICE_URL) return;
-  try {
-    const res = await fetch(`${env.MAIL_SERVICE_URL}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) logger.warn({ path, status: res.status }, 'Mail service returned an error');
-  } catch (err) {
-    logger.warn({ err, path }, 'Mail service unreachable');
-  }
-}
+const send = (to: string, category: string, mail: RenderedMail) => deliver({ to, category, ...mail });
 
 export const mailer = {
-  welcome: (email: string) => post('/mail/welcome', { email }),
-  otp: (email: string, otp: string) => post('/mail/otp', { email, otp }),
-  /** Internal "a user did X" notification to the operations team. */
-  activity: (userId: string, activityName: string) =>
-    post('/mail/activity_notify', { userId, activityName }),
-  loginNotice: (email: string, deviceId: string, location: string) =>
-    post('/mail/login_notify', { email, deviceId, location }),
-  orderReceived: (input: {
-    pharmacyEmail: string;
-    orderId: string;
-    orderDetails: string;
+  verificationCode: (input: {
+    to: string;
+    code: string;
+    purpose: CodePurpose;
+    firstName?: string | null;
+    expiresInMinutes: number;
+  }) => send(input.to, `code-${input.purpose}`, templates.verificationCode(input)),
+
+  welcome: (input: { to: string; firstName?: string | null }) => send(input.to, 'welcome', templates.welcome(input)),
+
+  signInAlert: (input: { to: string; firstName?: string | null; device: string; ipAddress?: string | null; at?: Date }) =>
+    send(input.to, 'sign-in', templates.signInAlert({ ...input, at: input.at ?? new Date() })),
+
+  passwordChanged: (input: { to: string; firstName?: string | null; at?: Date }) =>
+    send(input.to, 'password-changed', templates.passwordChanged({ ...input, at: input.at ?? new Date() })),
+
+  pharmacyNewOrder: (input: {
+    to: string;
+    pharmacyName?: string | null;
+    trackingId: string;
     customerName: string;
-  }) => post('/mail/order_received', input),
+    items: OrderLine[];
+    deliveryAddress?: string | null;
+  }) => send(input.to, 'pharmacy-order', templates.pharmacyNewOrder(input)),
+
+  orderStatusUpdate: (input: {
+    to: string;
+    firstName?: string | null;
+    trackingId: string;
+    status: string;
+    items: OrderLine[];
+    total: string;
+  }) => send(input.to, 'order-status', templates.orderStatusUpdate(input)),
+
+  appointmentUpdate: (input: { to: string } & templates.AppointmentEmailInput) =>
+    send(input.to, `appointment-${input.event}`, templates.appointmentUpdate(input)),
+
+  async activity(userId: string, activity: string) {
+    try {
+      const [user] = await db
+        .select({
+          id: users.id,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          email: users.email,
+          phoneNumber: users.phoneNumber,
+          country: users.country,
+        })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+      if (!user) return;
+      await send(
+        env.OPS_EMAIL,
+        'ops-activity',
+        templates.opsActivity({
+          activity,
+          user: { ...user, name: `${user.firstName} ${user.lastName}`.trim() },
+          at: new Date(),
+        }),
+      );
+    } catch (err) {
+      logger.error({ err, userId, activity }, 'Failed to send activity email');
+    }
+  },
 };

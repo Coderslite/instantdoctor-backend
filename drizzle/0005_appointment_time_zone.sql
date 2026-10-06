@@ -1,0 +1,1 @@
+ALTER TABLE `appointments` ADD `time_zone` varchar(64);

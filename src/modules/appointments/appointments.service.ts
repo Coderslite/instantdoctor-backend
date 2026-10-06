@@ -14,6 +14,7 @@ import { badRequest, conflict, forbidden, notFound, unprocessable } from '../../
 import { newId } from '../../lib/ids.js';
 import type { UserRole } from '../../db/schema/users.js';
 import { realtime } from '../../realtime/gateway.js';
+import { emailAppointmentUpdate } from './appointment-emails.js';
 import { runEffects, type Effect } from '../payments/effects.js';
 import { confirmAppointment } from '../payments/fulfillment.js';
 import { quoteFromUsd, resolveRegion } from '../pricing/pricing.service.js';
@@ -133,7 +134,12 @@ async function planBooking(userId: string, input: CreateAppointmentInput): Promi
  * - `idempotencyKey` is stored under UNIQUE(user_id, idempotency_key): replays
  *   return the original appointment instead of booking twice.
  */
-export async function createAppointment(userId: string, input: CreateAppointmentInput, idempotencyKey?: string) {
+export async function createAppointment(
+  userId: string,
+  input: CreateAppointmentInput,
+  idempotencyKey?: string,
+  timeZone?: string | null,
+) {
   if (idempotencyKey) {
     const existing = await findByIdempotencyKey(userId, idempotencyKey);
     if (existing) return { appointment: existing, created: false };
@@ -187,6 +193,7 @@ export async function createAppointment(userId: string, input: CreateAppointment
         isTrial: input.isTrial,
         holdExpiresAt: holdUntil(),
         idempotencyKey: idempotencyKey ?? null,
+        timeZone: validTimeZone(timeZone),
       });
 
       // Trials need no payment: confirm immediately with the same side effects as a paid booking.
@@ -203,6 +210,16 @@ export async function createAppointment(userId: string, input: CreateAppointment
 
   await runEffects(effects);
   return { appointment: await getAppointmentForUser({ userId, role: 'user' }, appointmentId), created: true };
+}
+
+export function validTimeZone(value: string | null | undefined): string | null {
+  if (!value || value.length > 64) return null;
+  try {
+    new Intl.DateTimeFormat('en-GB', { timeZone: value });
+    return value;
+  } catch {
+    return null;
+  }
 }
 
 const holdUntil = () => new Date(Date.now() + env.BOOKING_HOLD_MINUTES * 60_000);
@@ -261,7 +278,7 @@ export async function assertSlotFree(tx: Tx, doctorId: string, start: Date, end:
  * doctor lock and extend the hold, so the patient never pays for a slot that
  * was released and re-booked in the meantime.
  */
-export async function reserveSlotForPayment(appointmentId: string) {
+export async function reserveSlotForPayment(appointmentId: string, holdMinutes = env.BOOKING_HOLD_MINUTES) {
   await db.transaction(async (tx) => {
     const [row] = await tx.select().from(appointments).where(eq(appointments.id, appointmentId)).limit(1);
     if (!row) throw notFound('Appointment');
@@ -269,7 +286,8 @@ export async function reserveSlotForPayment(appointmentId: string) {
       await lockDoctor(tx, row.doctorId);
       await assertSlotFree(tx, row.doctorId, row.startTime, row.endTime, row.id);
     }
-    await tx.update(appointments).set({ holdExpiresAt: holdUntil() }).where(eq(appointments.id, appointmentId));
+    const holdExpiresAt = new Date(Date.now() + holdMinutes * 60_000);
+    await tx.update(appointments).set({ holdExpiresAt }).where(eq(appointments.id, appointmentId));
   });
 }
 
@@ -415,6 +433,7 @@ export async function acceptAppointment(doctorId: string, appointmentId: string)
     return row.userId;
   });
   realtime.toUser(patientId, 'appointment:updated', { id: appointmentId, status: 'active', isPaid: true });
+  void emailAppointmentUpdate(appointmentId, 'accepted');
   return getAppointmentForUser({ userId: doctorId, role: 'doctor' }, appointmentId);
 }
 
@@ -439,6 +458,7 @@ export async function transitionByDoctor(doctorId: string, appointmentId: string
     .where(and(eq(appointments.id, appointmentId), eq(appointments.status, row.status)));
   if (affectedRows(result) === 0) throw conflict('CONCURRENT_UPDATE', 'Appointment changed; reload and retry');
   realtime.toUser(row.userId, 'appointment:updated', { id: row.id, status: next, isPaid: row.isPaid });
+  if (next === 'completed' || next === 'cancelled') void emailAppointmentUpdate(appointmentId, next);
   return getAppointmentForUser({ userId: doctorId, role: 'doctor' }, appointmentId);
 }
 

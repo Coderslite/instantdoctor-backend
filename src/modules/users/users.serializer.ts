@@ -1,11 +1,22 @@
 import type { doctorProfiles, userMedicalProfiles, users } from '../../db/schema/index.js';
+import { isCountryCode, toE164 } from '../../lib/phone.js';
 
 type User = typeof users.$inferSelect;
 type Medical = typeof userMedicalProfiles.$inferSelect;
 type Doctor = typeof doctorProfiles.$inferSelect;
 
 /** The authenticated user's own profile. Never exposes credentials or tokens. */
+export type ProfileRequirement = 'country' | 'phoneNumber';
+
+export function missingProfileFields(user: Pick<User, 'country' | 'phoneNumber'>): ProfileRequirement[] {
+  const missing: ProfileRequirement[] = [];
+  if (!isCountryCode(user.country)) missing.push('country');
+  if (!toE164(user.phoneNumber, user.country)) missing.push('phoneNumber');
+  return missing;
+}
+
 export function serializeMe(user: User, medical?: Medical | null) {
+  const missing = missingProfileFields(user);
   return {
     id: user.id,
     email: user.email,
@@ -44,6 +55,7 @@ export function serializeMe(user: User, medical?: Medical | null) {
           surgicalHistory: medical.surgicalHistory,
         }
       : null,
+    profileCompletion: { complete: missing.length === 0, missing },
     createdAt: user.createdAt,
   };
 }

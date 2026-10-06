@@ -1,0 +1,1 @@
+ALTER TABLE `users` ADD `registration_status` enum('pending_verification','active') DEFAULT 'active' NOT NULL;

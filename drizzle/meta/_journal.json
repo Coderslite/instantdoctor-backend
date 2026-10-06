@@ -15,6 +15,55 @@
       "when": 1791035669709,
       "tag": "0001_open_appointment_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1791060165357,
+      "tag": "0002_registration_verification",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1791060595968,
+      "tag": "0003_password_reset_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1791069701437,
+      "tag": "0004_payment_methods",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1791075256109,
+      "tag": "0005_appointment_time_zone",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1791275827109,
+      "tag": "0006_lab_result_details",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1791290399703,
+      "tag": "0007_blog",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1791295972499,
+      "tag": "0008_blog_post_views",
+      "breakpoints": true
     }
   ]
 }

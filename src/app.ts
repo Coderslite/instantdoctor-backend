@@ -34,7 +34,7 @@ export function createApp(): Express {
   app.use(cors({ origin: env.CORS_ORIGINS === '*' ? true : env.CORS_ORIGINS.split(',') }));
 
   // Webhooks need the raw body for signature verification: mount before JSON parsing.
-  app.use('/v1/webhooks', webhooksRouter);
+  app.use('/api/v1/webhooks', webhooksRouter);
 
   app.use(express.json({ limit: '1mb' }));
 
@@ -59,7 +59,7 @@ export function createApp(): Express {
   }
 
   app.use('/files', express.static(resolve(env.UPLOAD_DIR), { maxAge: '7d', index: false }));
-  app.use('/v1', apiRouter);
+  app.use('/api/v1', apiRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

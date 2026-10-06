@@ -7,9 +7,9 @@ import { api, auth, createDoctor, createPackage, createUser, inHours, resetDatab
 afterAll(() => closeDatabase());
 
 const book = (token: string, key: string, body: object) =>
-  api().post('/v1/appointments').set(auth(token)).set('Idempotency-Key', key).send(body);
+  api().post('/api/v1/appointments').set(auth(token)).set('Idempotency-Key', key).send(body);
 
-describe('POST /v1/appointments', () => {
+describe('POST /api/v1/appointments', () => {
   let packageId: string;
 
   beforeEach(async () => {
@@ -20,7 +20,7 @@ describe('POST /v1/appointments', () => {
   it('requires an Idempotency-Key', async () => {
     const patient = await createUser();
     const res = await api()
-      .post('/v1/appointments')
+      .post('/api/v1/appointments')
       .set(auth(patient.token))
       .send({ packageId, startTime: inHours(2) });
     expect(res.status).toBe(400);
@@ -135,7 +135,7 @@ describe('POST /v1/appointments', () => {
   });
 });
 
-describe('POST /v1/appointments/:id/accept', () => {
+describe('POST /api/v1/appointments/:id/accept', () => {
   beforeEach(() => resetDatabase());
 
   it('lets exactly one doctor claim an open request', async () => {
@@ -146,7 +146,7 @@ describe('POST /v1/appointments/:id/accept', () => {
     await db.update(appointments).set({ isPaid: true }).where(eq(appointments.id, booked.body.id));
 
     const results = await Promise.all(
-      doctors.map((d) => api().post(`/v1/appointments/${booked.body.id}/accept`).set(auth(d.token))),
+      doctors.map((d) => api().post(`/api/v1/appointments/${booked.body.id}/accept`).set(auth(d.token))),
     );
 
     const winners = results.filter((r) => r.status === 200);
@@ -160,7 +160,7 @@ describe('POST /v1/appointments/:id/accept', () => {
     const patient = await createUser();
     const doctor = await createDoctor();
     const booked = await book(patient.token, 'claim-unpaid-01', { packageId, startTime: inHours(3) });
-    const res = await api().post(`/v1/appointments/${booked.body.id}/accept`).set(auth(doctor.token));
+    const res = await api().post(`/api/v1/appointments/${booked.body.id}/accept`).set(auth(doctor.token));
     expect(res.status).toBe(422);
   });
 });

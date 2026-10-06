@@ -24,6 +24,11 @@ paymentsRouter.post('/:reference/verify', async (req, res) => {
   res.json(await service.verifyPayment(currentUser(req).userId, req.params.reference));
 });
 
+/** Bank transfer: the customer says they've sent the money. */
+paymentsRouter.post('/:reference/transfer-sent', async (req, res) => {
+  res.json(await service.confirmTransferSent(currentUser(req).userId, req.params.reference));
+});
+
 /**
  * Provider webhooks. Mounted before the JSON body parser: signature checks
  * need the exact raw bytes.

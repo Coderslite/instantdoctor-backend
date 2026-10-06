@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { OTP_PURPOSES } from '../../db/schema/index.js';
+import { toE164 } from '../../lib/phone.js';
 
 const email = z.email().trim().toLowerCase().max(191);
 const password = z.string().min(8, 'Password must be at least 8 characters').max(128);
@@ -7,19 +7,36 @@ const name = z.string().trim().min(1).max(100);
 
 export const checkEmailSchema = z.object({ email });
 
-export const requestOtpSchema = z.object({ email, purpose: z.enum(OTP_PURPOSES) });
+const otp = z.string().regex(/^\d{5}$/, 'Code must be 5 digits');
 
+/** Step 1 of sign-up. Creates a pending account and emails a verification code. */
 export const registerSchema = z.object({
   email,
   password,
-  otp: z.string().regex(/^\d{5}$/, 'Code must be 5 digits'),
   firstName: name,
   lastName: name,
-  phoneNumber: z.string().trim().min(5).max(32),
+  phoneNumber: z
+    .string()
+    .trim()
+    .max(32)
+    .transform((value, ctx) => {
+      const normalized = toE164(value);
+      if (!normalized) {
+        ctx.addIssue({ code: 'custom', message: 'Enter a valid phone number including the country code' });
+        return z.NEVER;
+      }
+      return normalized;
+    }),
   gender: z.string().trim().max(32),
   platform: z.enum(['ios', 'android', 'web']).optional(),
   referredBy: z.string().trim().max(64).optional(),
 });
+
+/** Step 2 of sign-up. */
+export const verifyRegistrationSchema = z.object({ email, otp });
+
+/** Used by both "resend sign-up code" and "forgot password". */
+export const emailOnlySchema = z.object({ email });
 
 export const loginSchema = z.object({ email, password: z.string().min(1).max(128) });
 
@@ -40,9 +57,12 @@ export const appleSchema = z.object({
 
 export const refreshSchema = z.object({ refreshToken: z.string().min(20) });
 
+/** Password reset step 2: exchange the emailed code for a reset token. */
+export const verifyResetCodeSchema = z.object({ email, otp });
+
+/** Password reset step 3. */
 export const resetPasswordSchema = z.object({
-  email,
-  otp: z.string().regex(/^\d{5}$/),
+  resetToken: z.string().min(20).max(128),
   newPassword: password,
 });
 

@@ -9,16 +9,30 @@ export interface InitializeInput {
   customer: { email: string; name: string };
   description: string;
   metadata: Record<string, string>;
+  method: 'card' | 'bank_transfer';
+  /** Bank transfer only: when the temporary account must stop accepting money (ISO-8601). */
+  transferExpiresAt?: string;
 }
 
 /** What the mobile client must do next to complete payment. */
 export type ClientAction =
   | { type: 'stripe_payment_sheet'; clientSecret: string; paymentIntentId: string }
-  | { type: 'redirect'; authorizationUrl: string; accessCode?: string };
+  | { type: 'redirect'; authorizationUrl: string; accessCode?: string }
+  | {
+      type: 'bank_transfer';
+      accountName: string;
+      accountNumber: string;
+      bankName: string;
+      expiresAt: string;
+      displayText?: string;
+      amount?: number;
+    };
 
 export interface InitializeResult {
   providerReference: string | null;
   clientAction: ClientAction;
+  /** Amount the provider will actually collect when it adds its fee to the customer's total. */
+  collectAmountMinor?: number;
 }
 
 export type ProviderOutcome = 'succeeded' | 'failed' | 'pending';
@@ -55,9 +69,14 @@ export class ProviderError extends Error {
     readonly provider: PaymentProviderName,
     message: string,
     override readonly cause?: unknown,
+    readonly httpStatus?: number,
   ) {
     super(`[${provider}] ${message}`);
     this.name = 'ProviderError';
+  }
+
+  get isUnknownReference(): boolean {
+    return this.httpStatus === 404 || /reference (not found|is invalid)|not found/i.test(this.message);
   }
 }
 

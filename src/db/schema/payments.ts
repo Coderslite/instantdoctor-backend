@@ -19,6 +19,9 @@ export type PaymentProviderName = (typeof PAYMENT_PROVIDERS)[number];
 export const PAYMENT_PURPOSES = ['appointment', 'order_checkout', 'lab_result', 'wallet_topup'] as const;
 export type PaymentPurpose = (typeof PAYMENT_PURPOSES)[number];
 
+export const PAYMENT_METHODS = ['card', 'bank_transfer'] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+
 export const PAYMENT_STATUSES = ['pending', 'succeeded', 'failed', 'cancelled'] as const;
 export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
 
@@ -38,6 +41,7 @@ export const payments = mysqlTable(
     purpose: mysqlEnum('purpose', PAYMENT_PURPOSES).notNull(),
     purposeRefId: id('purpose_ref_id'),
     provider: mysqlEnum('provider', PAYMENT_PROVIDERS).notNull(),
+    method: mysqlEnum('method', PAYMENT_METHODS).notNull().default('card'),
     status: mysqlEnum('status', PAYMENT_STATUSES).notNull().default('pending'),
 
     baseAmount: money('base_amount').notNull(),
@@ -53,6 +57,10 @@ export const payments = mysqlTable(
     failureReason: varchar('failure_reason', { length: 512 }),
     metadata: json('metadata').$type<Record<string, unknown>>(),
     paidAt: timestamp('paid_at'),
+    /** Bank transfer: when the temporary account stops accepting money. */
+    expiresAt: timestamp('expires_at'),
+    /** Bank transfer: when the customer tapped "I've sent the money" (support evidence). */
+    customerConfirmedAt: timestamp('customer_confirmed_at'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

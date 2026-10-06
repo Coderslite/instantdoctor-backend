@@ -4,6 +4,7 @@ import { appointmentsRouter } from './modules/appointments/appointments.routes.j
 import { prescriptionsRouter } from './modules/appointments/prescriptions.routes.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { doctorsRouter } from './modules/doctors/doctors.routes.js';
+import { adminBlogRouter, blogRouter } from './modules/blog/blog.routes.js';
 import { healthTipsRouter } from './modules/health-tips/health-tips.routes.js';
 import { labResultsRouter } from './modules/lab-results/lab-results.routes.js';
 import { medicationsRouter } from './modules/medications/medications.routes.js';
@@ -17,9 +18,14 @@ import { uploadsRouter } from './modules/uploads/uploads.routes.js';
 import { usersRouter } from './modules/users/users.routes.js';
 import { waitlistRouter } from './modules/waitlist/waitlist.routes.js';
 import { walletRouter } from './modules/wallet/wallet.routes.js';
+import { adminRouter } from './modules/admin/admin.routes.js';
+import { pharmacyPortalRouter } from './modules/pharmacy-portal/pharmacy-portal.routes.js';
 
 export const apiRouter = Router();
 
+apiRouter.use('/admin/blog', adminBlogRouter);
+apiRouter.use('/admin', adminRouter);
+apiRouter.use('/pharmacy-portal', pharmacyPortalRouter);
 apiRouter.use('/auth', authRouter);
 apiRouter.use('/users', usersRouter);
 apiRouter.use('/doctors', doctorsRouter);
@@ -31,6 +37,7 @@ apiRouter.use('/referrals', referralsRouter);
 apiRouter.use('/lab-results', labResultsRouter);
 apiRouter.use('/medications', medicationsRouter);
 apiRouter.use('/health-tips', healthTipsRouter);
+apiRouter.use('/blog', blogRouter);
 apiRouter.use('/notifications', notificationsRouter);
 apiRouter.use('/anonymous-questions', anonymousRouter);
 apiRouter.use('/reports', reportsRouter);

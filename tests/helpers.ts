@@ -14,7 +14,7 @@ const TABLES = [
   'referrals', 'reviews', 'prescriptions', 'appointment_messages', 'report_messages', 'reports',
   'appointments', 'appointment_packages', 'order_items', 'orders', 'order_checkouts', 'products',
   'pharmacies', 'lab_result_files', 'lab_results', 'service_charges', 'app_settings',
-  'doctor_profiles', 'user_medical_profiles', 'refresh_tokens', 'otp_codes', 'auth_identities', 'users',
+  'doctor_profiles', 'payout_accounts', 'user_medical_profiles', 'refresh_tokens', 'password_reset_tokens', 'otp_codes', 'auth_identities', 'users',
 ];
 
 export async function resetDatabase() {

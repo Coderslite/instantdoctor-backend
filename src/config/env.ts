@@ -28,8 +28,17 @@ const schema = z.object({
   // Web API key of the legacy Firebase project; enables lazy password migration at login.
   FIREBASE_WEB_API_KEY: optionalString,
 
-  // Existing mail service (instantdoctorapi /mail/*). Mail stays there; this service calls it.
-  MAIL_SERVICE_URL: optionalString,
+  MAIL_DRIVER: z.enum(['smtp', 'log']).default('log'),
+  SMTP_HOST: optionalString,
+  SMTP_PORT: z.coerce.number().int().positive().default(465),
+  SMTP_SECURE: bool.default(true),
+  SMTP_USER: optionalString,
+  SMTP_PASS: optionalString,
+  MAIL_FROM: z.string().default('Instant Doctor <no-reply@instantdoctor.co>'),
+  MAIL_REPLY_TO: z.string().default('support@instantdoctor.co'),
+  OPS_EMAIL: z.string().default('activities@instantdoctor.co'),
+  MAIL_LOGO_URL: z.url().default('https://instantdoctor.co/images/logo.png'),
+  WEBSITE_URL: z.url().default('https://instantdoctor.co'),
 
   GOOGLE_CLIENT_IDS: z
     .string()
@@ -55,18 +64,47 @@ const schema = z.object({
   BOOKING_HOLD_MINUTES: z.coerce.number().int().positive().default(30),
   BOOKING_MIN_LEAD_MINUTES: z.coerce.number().int().nonnegative().default(5),
 
+  /** `local` writes to UPLOAD_DIR and serves /files; `r2` stores in Cloudflare R2. */
+  STORAGE_DRIVER: z.enum(['local', 'r2']).default('local'),
+  R2_ACCOUNT_ID: optionalString,
+  R2_ACCESS_KEY_ID: optionalString,
+  R2_SECRET_ACCESS_KEY: optionalString,
+  R2_BUCKET: optionalString,
+  /** Public base URL of the bucket: a custom domain (https://files.instantdoctor.co) or its r2.dev URL. */
+  R2_PUBLIC_URL: z.url().optional(),
+  /** Overrides the R2 endpoint (any S3-compatible store, e.g. MinIO for local testing). */
+  R2_ENDPOINT: z.url().optional(),
   UPLOAD_DIR: z.string().default('uploads'),
   UPLOAD_MAX_BYTES: z.coerce.number().int().positive().default(15 * 1024 * 1024),
 
   ENABLE_PUSH: bool.default(true),
+  /** The sole doctor permitted to receive FCM pushes from a test database. */
+  TEST_DOCTOR_PUSH_EMAIL: z.string().email().default('doc@mailinator.com'),
   /** Serve Swagger UI at /docs and the spec at /openapi.json. */
   API_DOCS_ENABLED: bool.default(true),
+}).superRefine((cfg, ctx) => {
+  if (cfg.MAIL_DRIVER === 'smtp') {
+    for (const key of ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS'] as const) {
+      if (!cfg[key]) ctx.addIssue({ code: 'custom', path: [key], message: 'required when MAIL_DRIVER=smtp' });
+    }
+  }
+  if (cfg.STORAGE_DRIVER !== 'r2') return;
+  const required = ['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET', 'R2_PUBLIC_URL'] as const;
+  for (const key of required) {
+    if (!cfg[key]) ctx.addIssue({ code: 'custom', path: [key], message: 'required when STORAGE_DRIVER=r2' });
+  }
+  if (!cfg.R2_ACCOUNT_ID && !cfg.R2_ENDPOINT) {
+    ctx.addIssue({ code: 'custom', path: ['R2_ACCOUNT_ID'], message: 'required when STORAGE_DRIVER=r2 (or set R2_ENDPOINT)' });
+  }
 });
 
 export type Env = z.infer<typeof schema>;
 
 function load(): Env {
-  const parsed = schema.safeParse(process.env);
+  const source = Object.fromEntries(
+    Object.entries(process.env).map(([k, v]) => [k, v === '' ? undefined : v]),
+  );
+  const parsed = schema.safeParse(source);
   if (!parsed.success) {
     const details = parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`);
     throw new Error(`Invalid environment configuration:\n${details.join('\n')}`);

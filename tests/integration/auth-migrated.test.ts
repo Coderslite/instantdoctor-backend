@@ -25,7 +25,7 @@ async function migratedUser(password: string | null) {
   return row!;
 }
 
-const login = (email: string, password: string) => api().post('/v1/auth/login').send({ email, password });
+const login = (email: string, password: string) => api().post('/api/v1/auth/login').send({ email, password });
 
 describe('migrated email/password accounts', () => {
   beforeEach(() => resetDatabase());

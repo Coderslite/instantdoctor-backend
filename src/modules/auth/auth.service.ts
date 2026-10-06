@@ -5,6 +5,7 @@ import { db, type Executor } from '../../db/client.js';
 import {
   authIdentities,
   otpCodes,
+  passwordResetTokens,
   referrals,
   refreshTokens,
   userMedicalProfiles,
@@ -13,8 +14,8 @@ import {
 } from '../../db/schema/index.js';
 import { mailer } from '../../integrations/mailer.js';
 import { hashPassword, sha256, verifyPassword } from '../../lib/crypto.js';
-import { isDuplicateKeyError } from '../../lib/db-errors.js';
-import { badRequest, conflict, unauthorized } from '../../lib/errors.js';
+import { affectedRows, isDuplicateKeyError } from '../../lib/db-errors.js';
+import { badRequest, conflict, forbidden, unauthorized } from '../../lib/errors.js';
 import { newId, randomToken } from '../../lib/ids.js';
 import { logger } from '../../lib/logger.js';
 import { signAccessToken } from '../../lib/tokens.js';
@@ -25,6 +26,7 @@ import { verifyLegacyFirebasePassword } from './oauth.js';
 const OTP_TTL_MS = 10 * 60 * 1000;
 const OTP_MAX_ATTEMPTS = 5;
 const OTP_RESEND_INTERVAL_MS = 60 * 1000;
+const RESET_TOKEN_TTL_MS = 15 * 60 * 1000;
 
 type UserRow = typeof users.$inferSelect;
 
@@ -34,6 +36,29 @@ export interface Session {
   accessToken: string;
   refreshToken: string;
   tokenType: 'Bearer';
+}
+
+export interface ClientInfo {
+  userAgent?: string;
+  platform?: string;
+  ip?: string;
+}
+
+export function describeDevice(client?: ClientInfo): string {
+  const platform = client?.platform?.toLowerCase();
+  if (platform === 'android') return 'Instant Doctor app on Android';
+  if (platform === 'ios') return 'Instant Doctor app on iPhone';
+  if (client?.userAgent && /mozilla/i.test(client.userAgent)) return 'Web browser';
+  return 'Unknown device';
+}
+
+function alertSignIn(user: Pick<UserRow, 'email' | 'firstName'>, client?: ClientInfo) {
+  void mailer.signInAlert({
+    to: user.email,
+    firstName: user.firstName,
+    device: describeDevice(client),
+    ipAddress: client?.ip?.replace(/^::ffff:/, ""),
+  });
 }
 
 async function issueSession(user: Pick<UserRow, 'id' | 'role'>, userAgent?: string, familyId = newId()): Promise<Session> {
@@ -95,12 +120,8 @@ async function revokeAllSessions(userId: string) {
 
 const otpHash = (email: string, purpose: OtpPurpose, code: string) => sha256(`${email}:${purpose}:${code}`);
 
-export async function requestOtp(email: string, purpose: OtpPurpose) {
-  const existing = await findUserByEmail(email);
-  if (purpose === 'register' && existing) throw conflict('EMAIL_TAKEN', 'An account with this email already exists');
-  // For login/reset, respond identically whether or not the account exists (no enumeration).
-  if (purpose !== 'register' && !existing) return;
-
+/** Generates, stores (hashed) and emails a code. One code per minute per email/purpose. */
+async function issueOtp(email: string, purpose: OtpPurpose) {
   const [latest] = await db
     .select({ createdAt: otpCodes.createdAt })
     .from(otpCodes)
@@ -119,7 +140,14 @@ export async function requestOtp(email: string, purpose: OtpPurpose) {
     codeHash: otpHash(email, purpose, code),
     expiresAt: new Date(Date.now() + OTP_TTL_MS),
   });
-  await mailer.otp(email, code);
+  const owner = await findUserByEmail(email);
+  await mailer.verificationCode({
+    to: email,
+    code,
+    purpose,
+    firstName: owner?.firstName,
+    expiresInMinutes: OTP_TTL_MS / 60_000,
+  });
 }
 
 /** Consumes a valid OTP or throws. Each wrong guess counts against the latest code. */
@@ -152,8 +180,10 @@ export async function findUserByEmail(email: string) {
   return user ?? null;
 }
 
+/** Free to register: no account, or only an unverified sign-up (which re-registering replaces). */
 export async function isEmailAvailable(email: string) {
-  return !(await findUserByEmail(email));
+  const user = await findUserByEmail(email);
+  return !user || user.registrationStatus === 'pending_verification';
 }
 
 /** Referral tag: first two letters of the first name + 8 digits (time-derived + random). */
@@ -171,7 +201,9 @@ interface NewUserInput {
   gender?: string | null;
   photoUrl?: string | null;
   platform?: string | null;
+  /** False for email/password sign-ups until the emailed code is confirmed. */
   emailVerified: boolean;
+  pendingVerification?: boolean;
   referredBy?: string | null;
   identity?: Pick<ExternalIdentity, 'provider' | 'providerUserId'>;
 }
@@ -192,6 +224,7 @@ async function createUser(input: NewUserInput): Promise<UserRow> {
           photoUrl: input.photoUrl ?? null,
           platform: input.platform ?? null,
           tag: generateTag(input.firstName),
+          registrationStatus: input.pendingVerification ? 'pending_verification' : 'active',
           emailVerifiedAt: input.emailVerified ? new Date() : null,
           lastSeenAt: new Date(),
         });
@@ -209,10 +242,15 @@ async function createUser(input: NewUserInput): Promise<UserRow> {
       throw err;
     }
   }
-  void mailer.welcome(input.email);
-  void mailer.activity(userId, 'Registration');
   const [user] = await db.select().from(users).where(eq(users.id, userId));
+  if (!input.pendingVerification) onActivated(user!);
   return user!;
+}
+
+/** First moment an account becomes usable: welcome the user, notify operations. */
+function onActivated(user: Pick<UserRow, 'id' | 'email' | 'firstName'>) {
+  void mailer.welcome({ to: user.email, firstName: user.firstName });
+  void mailer.activity(user.id, 'Registration');
 }
 
 async function attachReferral(executor: Executor, userId: string, referrerTag: string) {
@@ -229,36 +267,102 @@ async function loadMe(user: UserRow) {
 
 // ─── Flows ───────────────────────────────────────────────────────────────────
 
-export async function register(
-  input: {
-    email: string;
-    password: string;
-    otp: string;
-    firstName: string;
-    lastName: string;
-    phoneNumber: string;
-    gender: string;
-    platform?: string;
-    referredBy?: string;
-  },
-  userAgent?: string,
-) {
-  await consumeOtp(input.email, 'register', input.otp);
-  const user = await createUser({
-    email: input.email,
-    firstName: input.firstName,
-    lastName: input.lastName,
-    phoneNumber: input.phoneNumber,
-    gender: input.gender,
-    platform: input.platform,
-    passwordHash: await hashPassword(input.password),
-    emailVerified: true,
-    referredBy: input.referredBy,
-  });
-  return { user: await loadMe(user), session: await issueSession(user, userAgent) };
+export interface RegistrationInput {
+  email: string;
+  password: string;
+  firstName: string;
+  lastName: string;
+  phoneNumber: string;
+  gender: string;
+  platform?: string;
+  referredBy?: string;
 }
 
-export async function login(email: string, password: string, userAgent?: string) {
+/**
+ * Step 1 of sign-up: creates the account in `pending_verification` and emails a
+ * 5-digit code. No session is issued until the code is confirmed with
+ * `verifyRegistration`. Registering again with an email that is still pending
+ * replaces the earlier details (e.g. the user mistyped something and restarted).
+ */
+export async function register(input: RegistrationInput) {
+  const passwordHash = await hashPassword(input.password);
+  const existing = await findUserByEmail(input.email);
+
+  if (existing && existing.registrationStatus === 'active') {
+    throw conflict('EMAIL_TAKEN', 'An account with this email already exists');
+  }
+
+  if (existing) {
+    await db.transaction(async (tx) => {
+      const updated = await tx
+        .update(users)
+        .set({
+          passwordHash,
+          firstName: input.firstName,
+          lastName: input.lastName,
+          phoneNumber: input.phoneNumber,
+          gender: input.gender,
+          platform: input.platform ?? null,
+        })
+        .where(and(eq(users.id, existing.id), eq(users.registrationStatus, 'pending_verification')));
+      // Verified by a concurrent request in the meantime.
+      if (affectedRows(updated) === 0) throw conflict('EMAIL_TAKEN', 'An account with this email already exists');
+      await tx.delete(referrals).where(eq(referrals.userId, existing.id));
+      if (input.referredBy) await attachReferral(tx, existing.id, input.referredBy);
+    });
+  } else {
+    await createUser({
+      email: input.email,
+      firstName: input.firstName,
+      lastName: input.lastName,
+      phoneNumber: input.phoneNumber,
+      gender: input.gender,
+      platform: input.platform,
+      passwordHash,
+      emailVerified: false,
+      pendingVerification: true,
+      referredBy: input.referredBy,
+    });
+  }
+
+  await issueOtp(input.email, 'register');
+  return pendingRegistrationResponse(input.email);
+}
+
+const pendingRegistrationResponse = (email: string) => ({
+  email,
+  status: 'pending_verification' as const,
+  codeExpiresInSeconds: OTP_TTL_MS / 1000,
+});
+
+/** Step 2 of sign-up: confirms the emailed code, activates the account and signs the user in. */
+export async function verifyRegistration(email: string, otp: string, client?: ClientInfo) {
+  const user = await findUserByEmail(email);
+  if (!user) throw badRequest('Invalid or expired verification code');
+  if (user.registrationStatus === 'active') {
+    throw conflict('ALREADY_VERIFIED', 'This account is already verified; please log in');
+  }
+
+  await consumeOtp(email, 'register', otp);
+  await db
+    .update(users)
+    .set({ registrationStatus: 'active', emailVerifiedAt: new Date(), lastSeenAt: new Date() })
+    .where(eq(users.id, user.id));
+  onActivated(user);
+
+  const active = { ...user, registrationStatus: 'active' as const };
+  return { user: await loadMe(active), session: await issueSession(active, client?.userAgent) };
+}
+
+/** Sends a fresh sign-up code. Silent for unknown or already-verified emails (no enumeration). */
+export async function resendRegistrationCode(email: string) {
+  const user = await findUserByEmail(email);
+  if (user?.registrationStatus !== 'pending_verification') return;
+  await issueOtp(email, 'register');
+}
+
+
+export async function login(email: string, password: string, client?: ClientInfo) {
   const user = await findUserByEmail(email);
   if (!user) throw unauthorized('Invalid email or password');
 
@@ -269,6 +373,10 @@ export async function login(email: string, password: string, userAgent?: string)
     ok = firebaseUid === user.id;
   }
   if (!ok) throw unauthorized('Invalid email or password');
+  // Checked after the password so the response doesn't reveal pending sign-ups to strangers.
+  if (user.registrationStatus === 'pending_verification') {
+    throw forbidden('Verify your email with the code we sent to finish signing up', 'EMAIL_NOT_VERIFIED');
+  }
 
   if (user.legacyAuth || !user.passwordHash) {
     await db
@@ -277,14 +385,15 @@ export async function login(email: string, password: string, userAgent?: string)
       .where(eq(users.id, user.id));
   }
   await db.update(users).set({ lastSeenAt: new Date() }).where(eq(users.id, user.id));
-  return { user: await loadMe(user), session: await issueSession(user, userAgent) };
+  alertSignIn(user, client);
+  return { user: await loadMe(user), session: await issueSession(user, client?.userAgent) };
 }
 
 /** Google / Apple sign-in: link by provider id, then by verified email, else create. */
 export async function socialSignIn(
   identity: ExternalIdentity,
   extra: { firstName?: string; lastName?: string; referredBy?: string; platform?: string },
-  userAgent?: string,
+  client?: ClientInfo,
 ) {
   const [linked] = await db
     .select({ user: users })
@@ -298,6 +407,16 @@ export async function socialSignIn(
 
   if (!user && identity.email && identity.emailVerified) {
     user = await findUserByEmail(identity.email);
+    if (user?.registrationStatus === 'pending_verification') {
+      // The provider has proven ownership of this email. Whoever started the
+      // unverified sign-up may not be the owner, so their password is discarded.
+      await db
+        .update(users)
+        .set({ registrationStatus: 'active', emailVerifiedAt: new Date(), passwordHash: null })
+        .where(eq(users.id, user.id));
+      user = { ...user, registrationStatus: 'active', passwordHash: null };
+      onActivated(user);
+    }
     if (user) {
       await db.insert(authIdentities).values({
         id: newId(),
@@ -326,18 +445,89 @@ export async function socialSignIn(
   }
 
   await db.update(users).set({ lastSeenAt: new Date() }).where(eq(users.id, user.id));
-  return { user: await loadMe(user), session: await issueSession(user, userAgent), isNewUser };
+  if (!isNewUser) alertSignIn(user, client);
+  return { user: await loadMe(user), session: await issueSession(user, client?.userAgent), isNewUser };
 }
 
-export async function resetPassword(email: string, otp: string, newPassword: string) {
+// ─── Password reset: forgot → verify code → reset ───────────────────────────
+
+/** Step 1: emails a 5-digit reset code. Silent for unknown emails (no enumeration). */
+export async function forgotPassword(email: string) {
+  if (!(await findUserByEmail(email))) return;
+  await issueOtp(email, 'password_reset');
+}
+
+/**
+ * Step 2: checks the emailed code and exchanges it for a single-use reset token,
+ * so the app can confirm the code before asking for a new password. Issuing a
+ * token invalidates any earlier unused ones for the same account.
+ */
+export async function verifyPasswordResetCode(email: string, otp: string) {
   const user = await findUserByEmail(email);
   if (!user) throw badRequest('Invalid or expired verification code');
   await consumeOtp(email, 'password_reset', otp);
-  await db
-    .update(users)
-    .set({ passwordHash: await hashPassword(newPassword), legacyAuth: false })
-    .where(eq(users.id, user.id));
+
+  const resetToken = randomToken(32);
+  await db.transaction(async (tx) => {
+    await tx
+      .update(passwordResetTokens)
+      .set({ usedAt: new Date() })
+      .where(and(eq(passwordResetTokens.userId, user.id), isNull(passwordResetTokens.usedAt)));
+    await tx.insert(passwordResetTokens).values({
+      id: newId(),
+      userId: user.id,
+      tokenHash: sha256(resetToken),
+      expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
+    });
+  });
+  return { resetToken, expiresInSeconds: RESET_TOKEN_TTL_MS / 1000 };
+}
+
+/**
+ * Step 3: sets the new password. The token is claimed with a conditional update,
+ * so it works exactly once even under concurrent submissions. All sessions are
+ * revoked; the user signs in again with the new password.
+ */
+export async function resetPassword(resetToken: string, newPassword: string) {
+  const passwordHash = await hashPassword(newPassword);
+  const tokenHash = sha256(resetToken);
+
+  const user = await db.transaction(async (tx) => {
+    const claimed = await tx
+      .update(passwordResetTokens)
+      .set({ usedAt: new Date() })
+      .where(
+        and(
+          eq(passwordResetTokens.tokenHash, tokenHash),
+          isNull(passwordResetTokens.usedAt),
+          gt(passwordResetTokens.expiresAt, new Date()),
+        ),
+      );
+    if (affectedRows(claimed) === 0) {
+      throw badRequest('This reset link has expired or was already used; request a new code');
+    }
+    const [row] = await tx
+      .select({ user: users })
+      .from(passwordResetTokens)
+      .innerJoin(users, eq(users.id, passwordResetTokens.userId))
+      .where(eq(passwordResetTokens.tokenHash, tokenHash));
+    const owner = row!.user;
+    await tx
+      .update(users)
+      .set({
+        passwordHash,
+        legacyAuth: false,
+        // The reset code proved email ownership, which also completes a pending sign-up.
+        registrationStatus: 'active',
+        emailVerifiedAt: owner.emailVerifiedAt ?? new Date(),
+      })
+      .where(eq(users.id, owner.id));
+    return owner;
+  });
+
+  if (user.registrationStatus === 'pending_verification') onActivated(user);
   await revokeAllSessions(user.id);
+  void mailer.passwordChanged({ to: user.email, firstName: user.firstName });
 }
 
 export async function changePassword(userId: string, currentPassword: string, newPassword: string) {
@@ -351,4 +541,5 @@ export async function changePassword(userId: string, currentPassword: string, ne
     .set({ passwordHash: await hashPassword(newPassword), legacyAuth: false })
     .where(eq(users.id, userId));
   await revokeAllSessions(userId);
+  void mailer.passwordChanged({ to: user.email, firstName: user.firstName });
 }
