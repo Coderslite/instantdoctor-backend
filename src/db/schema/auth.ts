@@ -82,3 +82,27 @@ export const passwordResetTokens = mysqlTable(
     index('password_reset_tokens_user_idx').on(t.userId),
   ],
 );
+
+export const PORTAL_SUBJECTS = ['admin', 'pharmacy'] as const;
+export type PortalSubject = (typeof PORTAL_SUBJECTS)[number];
+
+export const portalSessions = mysqlTable(
+  'portal_sessions',
+  {
+    id: id('id').primaryKey(),
+    subjectType: mysqlEnum('subject_type', PORTAL_SUBJECTS).notNull(),
+    subjectId: id('subject_id').notNull(),
+    tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+    familyId: id('family_id').notNull(),
+    userAgent: varchar('user_agent', { length: 255 }),
+    expiresAt: timestamp('expires_at').notNull(),
+    rotatedAt: timestamp('rotated_at'),
+    revokedAt: timestamp('revoked_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('portal_sessions_hash_uq').on(t.tokenHash),
+    index('portal_sessions_family_idx').on(t.familyId),
+    index('portal_sessions_subject_idx').on(t.subjectType, t.subjectId),
+  ],
+);

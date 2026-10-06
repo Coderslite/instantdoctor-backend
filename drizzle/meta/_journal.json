@@ -64,6 +64,27 @@
       "when": 1791295972499,
       "tag": "0008_blog_post_views",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1791320193936,
+      "tag": "0009_files",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1791321660745,
+      "tag": "0010_direct_uploads",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "5",
+      "when": 1791322734054,
+      "tag": "0011_portal_sessions",
+      "breakpoints": true
     }
   ]
 }

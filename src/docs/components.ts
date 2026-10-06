@@ -664,12 +664,9 @@ export const BlogAuthor = z
     id,
     name: z.string(),
     slug: z.string(),
-    jobTitle: z
-      .string()
-      .nullable()
-      .meta({
-        description: 'Credentials shown with the byline, e.g. "MBBS, General Practitioner".',
-      }),
+    jobTitle: z.string().nullable().meta({
+      description: 'Credentials shown with the byline, e.g. "MBBS, General Practitioner".',
+    }),
     bio: z.string().nullable(),
     image: z.string().nullable(),
     links: z
@@ -873,8 +870,52 @@ export const WaitlistEntry = z
   .meta({ id: 'WaitlistEntry' });
 
 export const StoredFile = z
-  .object({ url: z.url(), key: z.string(), size: z.number().int(), contentType: z.string() })
+  .object({
+    id: z
+      .string()
+      .meta({
+        description: 'Reference this as `fileId` (chat, reports, lab results, doctor documents).',
+      }),
+    purpose: z.string().meta({ example: 'chat_attachment' }),
+    visibility: z.enum(['public', 'private']),
+    url: z
+      .url()
+      .meta({
+        description:
+          'Public files: permanent. Private files: signed link valid until `urlExpiresAt`.',
+      }),
+    urlExpiresAt: nullableDateTime,
+    contentType: z.string().meta({ example: 'image/jpeg' }),
+    size: z.number().int(),
+    name: z.string().nullable(),
+    createdAt: dateTime,
+  })
   .meta({ id: 'StoredFile' });
+
+export const UploadSession = z
+  .object({
+    fileId: z
+      .string()
+      .meta({
+        description: 'Confirm with `POST …/uploads/{fileId}/complete` once the PUT succeeds.',
+      }),
+    upload: z.object({
+      method: z.literal('PUT'),
+      url: z
+        .url()
+        .meta({
+          description: 'Send the raw file bytes here (not multipart). Valid until `expiresAt`.',
+        }),
+      headers: z
+        .record(z.string(), z.string())
+        .meta({
+          description: 'Send exactly these headers with the PUT.',
+          example: { 'Content-Type': 'image/jpeg' },
+        }),
+      expiresAt: dateTime,
+    }),
+  })
+  .meta({ id: 'UploadSession' });
 
 export const AppSettings = z
   .object({

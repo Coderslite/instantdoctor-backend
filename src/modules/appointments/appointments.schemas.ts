@@ -35,12 +35,13 @@ export const sendMessageSchema = z
     type: z.enum(MESSAGE_TYPES).default('text'),
     message: z.string().max(20_000).default(''),
     fileUrl: z.url().max(1024).optional(),
+    fileId: z.string().min(1).max(36).optional(),
     repliedToId: z.string().max(36).optional(),
     repliedText: z.string().max(20_000).optional(),
     repliedSenderId: z.string().max(36).optional(),
   })
-  .refine((v) => v.message.length > 0 || v.fileUrl, { message: 'message or fileUrl is required' })
-  .refine((v) => v.type === 'text' || v.fileUrl, { message: 'fileUrl is required for attachments', path: ['fileUrl'] });
+  .refine((v) => v.message.length > 0 || v.fileUrl || v.fileId, { message: 'message or fileId is required' })
+  .refine((v) => v.type === 'text' || v.fileUrl || v.fileId, { message: 'fileId is required for attachments', path: ['fileId'] });
 
 export const editMessageSchema = z.object({ message: z.string().min(1).max(20_000) });
 

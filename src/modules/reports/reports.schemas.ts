@@ -14,5 +14,6 @@ export const reportMessageSchema = z
     type: z.enum(MESSAGE_TYPES).default('text'),
     message: z.string().max(5000).default(''),
     fileUrl: z.url().optional(),
+    fileId: z.string().min(1).max(36).optional(),
   })
-  .refine((v) => v.message || v.fileUrl, 'message or fileUrl is required');
+  .refine((v) => v.message || v.fileUrl || v.fileId, 'message or fileId is required');

@@ -58,7 +58,7 @@ export const updateDoctorSchema = z.object({
   specialization: z.string().trim().max(128).nullable().optional(), experienceYears: z.coerce.number().int().min(0).max(80).nullable().optional(),
   bio: z.string().trim().max(5000).nullable().optional(), isAvailable: z.boolean().optional(), institution: z.string().trim().max(255).nullable().optional(),
   graduationYear: z.string().trim().max(8).nullable().optional(), housemanship: z.string().trim().max(255).nullable().optional(), housemanshipYear: z.string().trim().max(8).nullable().optional(),
-  workAddress: z.string().trim().max(512).nullable().optional(), homeAddress: z.string().trim().max(512).nullable().optional(), certificateUrl: z.url().max(1024).nullable().optional(),
+  workAddress: z.string().trim().max(512).nullable().optional(), homeAddress: z.string().trim().max(512).nullable().optional(), certificateUrl: z.url().max(1024).nullable().optional(), certificateFileId: z.string().min(1).max(36).optional(),
 }).refine((value) => Object.keys(value).length > 0, 'At least one field is required');
 export const patientEmailSchema = z.object({ subject: z.string().trim().min(1).max(200), message: z.string().trim().min(1).max(10_000) });
 export const patientPushSchema = z.object({ title: z.string().trim().min(1).max(120), message: z.string().trim().min(1).max(500) });

@@ -5,16 +5,35 @@ import { hashPassword, verifyPassword } from '../../lib/crypto.js';
 import { badRequest, forbidden, notFound, unauthorized } from '../../lib/errors.js';
 import { newId } from '../../lib/ids.js';
 import { signPharmacyAccessToken } from '../../lib/tokens.js';
+import { closeAllPortalSessions, closePortalSession, openPortalSession, rotatePortalSession } from '../auth/portal-sessions.js';
 
 type ListInput = { search?: string; status?: string; limit: number; offset: number };
 const searchTerm = (value?: string) => value ? `%${value}%` : undefined;
 
-export async function login(email: string, password: string) {
+const pharmacySession = (pharmacyId: string, refreshToken: string) => ({
+  accessToken: signPharmacyAccessToken(pharmacyId),
+  refreshToken,
+  tokenType: 'Bearer' as const,
+});
+
+export async function login(email: string, password: string, userAgent?: string) {
   const [pharmacy] = await db.select().from(pharmacies).where(eq(pharmacies.email, email.toLowerCase())).limit(1);
   if (!pharmacy?.passwordHash || !(await verifyPassword(password, pharmacy.passwordHash))) throw unauthorized('Invalid email or password');
   if (pharmacy.status !== 'active') throw forbidden('This pharmacy account is not active');
-  return { pharmacy: publicProfile(pharmacy), session: { accessToken: signPharmacyAccessToken(pharmacy.id), tokenType: 'Bearer' as const } };
+  return { pharmacy: publicProfile(pharmacy), session: pharmacySession(pharmacy.id, await openPortalSession('pharmacy', pharmacy.id, userAgent)) };
 }
+
+export async function refreshSession(refreshToken: string, userAgent?: string) {
+  const rotated = await rotatePortalSession('pharmacy', refreshToken, userAgent);
+  const [pharmacy] = await db.select({ status: pharmacies.status }).from(pharmacies).where(eq(pharmacies.id, rotated.subjectId)).limit(1);
+  if (pharmacy?.status !== 'active') {
+    await closeAllPortalSessions('pharmacy', rotated.subjectId);
+    throw unauthorized('Your session has ended. Please sign in again.');
+  }
+  return { session: pharmacySession(rotated.subjectId, rotated.refreshToken) };
+}
+
+export const logout = (refreshToken: string) => closePortalSession('pharmacy', refreshToken);
 
 const publicProfile = (pharmacy: typeof pharmacies.$inferSelect) => ({ id: pharmacy.id, name: pharmacy.name, email: pharmacy.email, phoneNumber: pharmacy.phoneNumber, address: pharmacy.address, latitude: pharmacy.latitude, longitude: pharmacy.longitude, deliveryFeePerKm: pharmacy.deliveryFeePerKm, discount: pharmacy.discount, image: pharmacy.image, balance: pharmacy.balance, status: pharmacy.status });
 
@@ -120,11 +139,12 @@ export async function updateProfile(pharmacyId: string, input: Partial<typeof ph
   return profile(pharmacyId);
 }
 
-export async function changePassword(pharmacyId: string, currentPassword: string, newPassword: string) {
+export async function changePassword(pharmacyId: string, currentPassword: string, newPassword: string, userAgent?: string) {
   const [pharmacy] = await db.select().from(pharmacies).where(eq(pharmacies.id, pharmacyId)).limit(1);
   if (!pharmacy?.passwordHash || !(await verifyPassword(currentPassword, pharmacy.passwordHash))) throw unauthorized('Current password is incorrect');
   await db.update(pharmacies).set({ passwordHash: await hashPassword(newPassword) }).where(eq(pharmacies.id, pharmacyId));
-  return { updated: true };
+  await closeAllPortalSessions('pharmacy', pharmacyId);
+  return { updated: true, session: pharmacySession(pharmacyId, await openPortalSession('pharmacy', pharmacyId, userAgent)) };
 }
 
 export const categories = () => db.select().from(productCategories).orderBy(productCategories.name);

@@ -2,8 +2,8 @@ import { Router } from 'express';
 import { notFound } from '../../lib/errors.js';
 import { page, paginationQuery } from '../../lib/pagination.js';
 import { parse } from '../../lib/validation.js';
-import { authenticate } from '../../middleware/authenticate.js';
-import { listDoctorsQuery } from './doctors.schemas.js';
+import { authenticate, currentUser, requireRole } from '../../middleware/authenticate.js';
+import { certificateSchema, listDoctorsQuery } from './doctors.schemas.js';
 import * as service from './doctors.service.js';
 
 export const doctorsRouter = Router();
@@ -15,6 +15,11 @@ doctorsRouter.get('/', async (req, res) => {
 });
 
 /** Auto-assignment for "any available doctor" bookings. */
+doctorsRouter.put('/me/certificate', requireRole('doctor'), async (req, res) => {
+  const { fileId } = parse(certificateSchema, req.body);
+  res.json(await service.setOwnCertificate(currentUser(req).userId, fileId));
+});
+
 doctorsRouter.get('/least-busy', async (_req, res) => {
   const id = await service.findLeastBusyDoctor();
   if (!id) throw notFound('Available doctor');

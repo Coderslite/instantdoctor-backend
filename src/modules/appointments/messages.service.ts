@@ -6,14 +6,17 @@ import { sendPush } from '../../integrations/push.js';
 import { forbidden, notFound, unprocessable } from '../../lib/errors.js';
 import { newId } from '../../lib/ids.js';
 import { realtime } from '../../realtime/gateway.js';
+import { attachFile, resolveFileUrl, withResolvedUrls } from '../files/files.service.js';
 import { requireParticipant, touchAppointment } from './appointments.service.js';
 import type { editMessageSchema, sendMessageSchema } from './appointments.schemas.js';
 
 type MessageRow = typeof appointmentMessages.$inferSelect;
 
+const withFileUrl = async (message: MessageRow) => ({ ...message, fileUrl: await resolveFileUrl(message.fileUrl) });
+
 export async function listMessages(userId: string, appointmentId: string, query: { limit: number; before?: Date }) {
   await requireParticipant(appointmentId, userId);
-  return db
+  const rows = await db
     .select()
     .from(appointmentMessages)
     .where(
@@ -24,6 +27,7 @@ export async function listMessages(userId: string, appointmentId: string, query:
     )
     .orderBy(desc(appointmentMessages.createdAt))
     .limit(query.limit);
+  return withResolvedUrls(rows, 'fileUrl');
 }
 
 export async function sendMessage(userId: string, appointmentId: string, input: z.infer<typeof sendMessageSchema>) {
@@ -31,6 +35,13 @@ export async function sendMessage(userId: string, appointmentId: string, input: 
   if (!appointment.isPaid) throw unprocessable('NOT_PAID', 'Chat opens once the appointment is paid');
   if (!appointment.doctorId) throw unprocessable('NOT_ASSIGNED', 'Chat opens once a doctor accepts the appointment');
   const receiverId = appointment.userId === userId ? appointment.doctorId : appointment.userId;
+  const fileUrl = input.fileId
+    ? await attachFile(
+        { kind: appointment.doctorId === userId ? 'doctor' : 'patient', id: userId },
+        input.fileId,
+        ['chat_attachment'],
+      )
+    : (input.fileUrl ?? null);
 
   const message: MessageRow = {
     id: newId(),
@@ -40,7 +51,7 @@ export async function sendMessage(userId: string, appointmentId: string, input: 
     type: input.type,
     status: 'delivered',
     message: input.message,
-    fileUrl: input.fileUrl ?? null,
+    fileUrl,
     repliedToId: input.repliedToId ?? null,
     repliedText: input.repliedText ?? null,
     repliedSenderId: input.repliedSenderId ?? null,
@@ -53,7 +64,8 @@ export async function sendMessage(userId: string, appointmentId: string, input: 
   await db.insert(appointmentMessages).values(message);
   await touchAppointment(appointmentId);
 
-  realtime.toAppointment(appointmentId, 'message:new', message);
+  const view = await withFileUrl(message);
+  realtime.toAppointment(appointmentId, 'message:new', view);
   const [receiver] = await db.select({ token: users.fcmToken }).from(users).where(eq(users.id, receiverId));
   // Content may be client-encrypted, so the push carries a generic body.
   void sendPush([receiver?.token], {
@@ -61,7 +73,7 @@ export async function sendMessage(userId: string, appointmentId: string, input: 
     body: input.type === 'text' ? 'You have a new message' : `You received a ${input.type}`,
     data: { id: appointmentId, type: 'chat' },
   });
-  return message;
+  return view;
 }
 
 async function requireOwnMessage(userId: string, appointmentId: string, messageId: string) {
@@ -86,7 +98,7 @@ export async function editMessage(
   const message = await requireOwnMessage(userId, appointmentId, messageId);
   const patch = { message: input.message, isEdited: true, editedAt: new Date() };
   await db.update(appointmentMessages).set(patch).where(eq(appointmentMessages.id, messageId));
-  const updated = { ...message, ...patch };
+  const updated = await withFileUrl({ ...message, ...patch });
   realtime.toAppointment(appointmentId, 'message:updated', updated);
   return updated;
 }

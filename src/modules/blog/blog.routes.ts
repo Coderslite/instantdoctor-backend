@@ -1,11 +1,10 @@
 import express, { Router, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import { isTest } from '../../config/env.js';
-import { storeFile } from '../../integrations/storage.js';
-import { badRequest } from '../../lib/errors.js';
 import { parse } from '../../lib/validation.js';
-import { authenticateAdmin, requireAdminRole } from '../../middleware/authenticate-admin.js';
-import { contentMatchesType, upload } from '../uploads/uploads.routes.js';
+import { authenticateAdmin, currentAdmin, requireAdminRole } from '../../middleware/authenticate-admin.js';
+import { uploadFile } from '../files/files.service.js';
+import { singleFile } from '../files/upload-middleware.js';
 import * as analytics from './blog.analytics.js';
 import * as schemas from './blog.schemas.js';
 import * as service from './blog.service.js';
@@ -82,7 +81,6 @@ blogRouter.get('/sitemap', cache(300), async (_req, res) => res.json(await servi
 export const adminBlogRouter = Router();
 adminBlogRouter.use(authenticateAdmin);
 const canWrite = requireAdminRole('admin', 'marketer');
-const IMAGE = /^image\/(png|jpe?g|gif|webp)$/;
 
 adminBlogRouter.get('/analytics', async (req, res) =>
   res.json(await analytics.analytics(parse(analytics.analyticsQuery, req.query))),
@@ -139,10 +137,6 @@ adminBlogRouter.delete('/authors/:id', canWrite, async (req, res) =>
 );
 
 /** Images for featured images and the editor body. */
-adminBlogRouter.post('/uploads', canWrite, upload.single('file'), async (req, res) => {
-  if (!req.file || !IMAGE.test(req.file.mimetype))
-    throw badRequest('A PNG, JPEG, GIF or WebP image is required in the "file" field');
-  if (!contentMatchesType(req.file.buffer, req.file.mimetype))
-    throw badRequest(`File content does not match its declared type (${req.file.mimetype})`);
-  res.status(201).json(await storeFile('blog', req.file));
+adminBlogRouter.post('/uploads', canWrite, singleFile, async (req, res) => {
+  res.status(201).json(await uploadFile({ kind: 'admin', id: currentAdmin(req).adminId }, 'blog_image', req.file!));
 });

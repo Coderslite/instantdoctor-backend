@@ -70,12 +70,16 @@ const schema = z.object({
   R2_ACCESS_KEY_ID: optionalString,
   R2_SECRET_ACCESS_KEY: optionalString,
   R2_BUCKET: optionalString,
+  R2_PUBLIC_BUCKET: optionalString,
+  R2_PRIVATE_BUCKET: optionalString,
   /** Public base URL of the bucket: a custom domain (https://files.instantdoctor.co) or its r2.dev URL. */
   R2_PUBLIC_URL: z.url().optional(),
   /** Overrides the R2 endpoint (any S3-compatible store, e.g. MinIO for local testing). */
   R2_ENDPOINT: z.url().optional(),
   UPLOAD_DIR: z.string().default('uploads'),
-  UPLOAD_MAX_BYTES: z.coerce.number().int().positive().default(15 * 1024 * 1024),
+  FILE_URL_TTL_SECONDS: z.coerce.number().int().min(60).max(7 * 24 * 3600).default(3600),
+  /** Lifetime of a presigned direct-upload URL. */
+  UPLOAD_URL_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(900),
 
   ENABLE_PUSH: bool.default(true),
   /** The sole doctor permitted to receive FCM pushes from a test database. */
@@ -89,9 +93,15 @@ const schema = z.object({
     }
   }
   if (cfg.STORAGE_DRIVER !== 'r2') return;
-  const required = ['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET', 'R2_PUBLIC_URL'] as const;
+  const required = ['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_PRIVATE_BUCKET', 'R2_PUBLIC_URL'] as const;
   for (const key of required) {
     if (!cfg[key]) ctx.addIssue({ code: 'custom', path: [key], message: 'required when STORAGE_DRIVER=r2' });
+  }
+  if (!cfg.R2_PUBLIC_BUCKET && !cfg.R2_BUCKET) {
+    ctx.addIssue({ code: 'custom', path: ['R2_PUBLIC_BUCKET'], message: 'required when STORAGE_DRIVER=r2' });
+  }
+  if ((cfg.R2_PUBLIC_BUCKET ?? cfg.R2_BUCKET) === cfg.R2_PRIVATE_BUCKET) {
+    ctx.addIssue({ code: 'custom', path: ['R2_PRIVATE_BUCKET'], message: 'must differ from the public bucket' });
   }
   if (!cfg.R2_ACCOUNT_ID && !cfg.R2_ENDPOINT) {
     ctx.addIssue({ code: 'custom', path: ['R2_ACCOUNT_ID'], message: 'required when STORAGE_DRIVER=r2 (or set R2_ENDPOINT)' });
@@ -115,3 +125,7 @@ function load(): Env {
 export const env = load();
 export const isProduction = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
+export const corsOrigin: true | string[] =
+  env.CORS_ORIGINS.trim() === '*'
+    ? true
+    : env.CORS_ORIGINS.split(',').map((origin) => origin.trim().replace(/\/+$/, '')).filter(Boolean);

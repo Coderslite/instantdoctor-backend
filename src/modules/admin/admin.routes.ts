@@ -2,14 +2,27 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { isTest } from '../../config/env.js';
 import { parse } from '../../lib/validation.js';
-import { authenticateAdmin, requireAdminRole } from '../../middleware/authenticate-admin.js';
+import {
+  authenticateAdmin,
+  currentAdmin,
+  requireAdminRole,
+} from '../../middleware/authenticate-admin.js';
+import { refreshSchema } from '../auth/auth.schemas.js';
 import * as schemas from './admin.schemas.js';
 import * as service from './admin.service.js';
-import { upload, contentMatchesType } from '../uploads/uploads.routes.js';
-import { storeFile } from '../../integrations/storage.js';
-import { badRequest } from '../../lib/errors.js';
+import { purposeOf } from '../files/files.routes.js';
+import { fileIdSchema, presignUploadSchema } from '../files/files.schemas.js';
+import { attachFile, completeUpload, createUpload, uploadFile } from '../files/files.service.js';
+import { singleFile } from '../files/upload-middleware.js';
 
 export const adminRouter = Router();
+const refreshLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  skip: () => isTest,
+});
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 10,
@@ -20,7 +33,18 @@ const loginLimiter = rateLimit({
 
 adminRouter.post('/auth/login', loginLimiter, async (req, res) => {
   const { email, password } = parse(schemas.adminLoginSchema, req.body);
-  res.json(await service.login(email, password));
+  res.json(await service.login(email, password, req.get('user-agent')));
+});
+
+adminRouter.post('/auth/refresh', refreshLimiter, async (req, res) => {
+  const { refreshToken } = parse(refreshSchema, req.body);
+  res.json(await service.refreshSession(refreshToken, req.get('user-agent')));
+});
+
+adminRouter.post('/auth/logout', async (req, res) => {
+  const { refreshToken } = parse(refreshSchema, req.body);
+  await service.logout(refreshToken);
+  res.status(204).end();
 });
 
 adminRouter.use(authenticateAdmin);
@@ -53,11 +77,15 @@ adminRouter.get('/doctors', async (req, res) =>
 adminRouter.get('/doctors/:id', async (req, res) =>
   res.json(await service.getDoctor(String(req.params.id))),
 );
-adminRouter.patch('/doctors/:id', requireAdminRole('admin'), async (req, res) =>
-  res.json(
-    await service.updateDoctor(String(req.params.id), parse(schemas.updateDoctorSchema, req.body)),
-  ),
-);
+adminRouter.patch('/doctors/:id', requireAdminRole('admin'), async (req, res) => {
+  const { certificateFileId, ...input } = parse(schemas.updateDoctorSchema, req.body);
+  const certificateUrl = certificateFileId
+    ? await attachFile({ kind: 'admin', id: currentAdmin(req).adminId }, certificateFileId, [
+        'doctor_document',
+      ])
+    : input.certificateUrl;
+  res.json(await service.updateDoctor(String(req.params.id), { ...input, certificateUrl }));
+});
 adminRouter.patch('/users/:id/status', requireAdminRole('admin'), async (req, res) => {
   const { status } = parse(schemas.userStatusSchema, req.body);
   res.json(await service.setUserStatus(String(req.params.id), status));
@@ -144,7 +172,12 @@ adminRouter.post('/product-categories', requireAdminRole('admin'), async (req, r
     .json(await service.createProductCategory(parse(schemas.productCategorySchema, req.body))),
 );
 adminRouter.patch('/product-categories/:id', requireAdminRole('admin'), async (req, res) =>
-  res.json(await service.updateProductCategory(String(req.params.id), parse(schemas.productCategorySchema, req.body))),
+  res.json(
+    await service.updateProductCategory(
+      String(req.params.id),
+      parse(schemas.productCategorySchema, req.body),
+    ),
+  ),
 );
 adminRouter.delete('/product-categories/:id', requireAdminRole('admin'), async (req, res) =>
   res.json(await service.deleteProductCategory(String(req.params.id))),
@@ -170,24 +203,58 @@ adminRouter.patch('/lab-results/:id/status', requireAdminRole('admin'), async (r
     ),
   );
 });
+/** Publishes an interpreted result uploaded directly to storage (see /admin/uploads/presign). */
+adminRouter.post('/lab-results/:id/result', requireAdminRole('admin'), async (req, res) => {
+  const admin = { kind: 'admin' as const, id: currentAdmin(req).adminId };
+  const { fileId, ...fields } = req.body as Record<string, unknown>;
+  const resultUrl = await attachFile(admin, parse(fileIdSchema, { fileId }).fileId, [
+    'lab_result_report',
+  ]);
+  const input = parse(schemas.labResultStatusSchema, {
+    ...fields,
+    status: 'completed',
+    reviewedAt: undefined,
+  });
+  res
+    .status(201)
+    .json(await service.updateLabResult(String(req.params.id), { ...input, resultUrl }));
+});
 adminRouter.post(
   '/lab-results/:id/upload',
   requireAdminRole('admin'),
-  upload.single('file'),
+  singleFile,
   async (req, res) => {
-    if (!req.file) throw badRequest('A PDF or image result file is required');
-    if (!contentMatchesType(req.file.buffer, req.file.mimetype))
-      throw badRequest(`File content does not match its declared type (${req.file.mimetype})`);
-    const stored = await storeFile('lab-results', req.file);
+    const admin = { kind: 'admin' as const, id: currentAdmin(req).adminId };
+    const file = await uploadFile(admin, 'lab_result_report', req.file!);
     const input = parse(schemas.labResultStatusSchema, {
       ...req.body,
-      resultUrl: stored.url,
       status: 'completed',
       reviewedAt: undefined,
     });
-    res.status(201).json(await service.updateLabResult(String(req.params.id), input));
+    const resultUrl = await attachFile(admin, file.id, ['lab_result_report']);
+    res
+      .status(201)
+      .json(await service.updateLabResult(String(req.params.id), { ...input, resultUrl }));
   },
 );
+adminRouter.post('/uploads', singleFile, async (req, res) => {
+  res
+    .status(201)
+    .json(
+      await uploadFile({ kind: 'admin', id: currentAdmin(req).adminId }, purposeOf(req), req.file!),
+    );
+});
+adminRouter.post('/uploads/presign', async (req, res) => {
+  const { purpose, ...plan } = parse(presignUploadSchema, req.body);
+  res
+    .status(201)
+    .json(await createUpload({ kind: 'admin', id: currentAdmin(req).adminId }, purpose, plan));
+});
+adminRouter.post('/uploads/:id/complete', async (req, res) => {
+  res.json(
+    await completeUpload({ kind: 'admin', id: currentAdmin(req).adminId }, String(req.params.id)),
+  );
+});
 adminRouter.get('/payments', async (req, res) =>
   res.json(await service.listPayments(parse(schemas.adminListQuery, req.query))),
 );

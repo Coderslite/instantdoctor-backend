@@ -14,7 +14,7 @@ import { pharmacyRouter } from './modules/pharmacy/pharmacy.routes.js';
 import { referralsRouter } from './modules/referrals/referrals.routes.js';
 import { reportsRouter } from './modules/reports/reports.routes.js';
 import { settingsRouter } from './modules/settings/settings.routes.js';
-import { uploadsRouter } from './modules/uploads/uploads.routes.js';
+import { filesRouter, uploadsRouter } from './modules/files/files.routes.js';
 import { usersRouter } from './modules/users/users.routes.js';
 import { waitlistRouter } from './modules/waitlist/waitlist.routes.js';
 import { walletRouter } from './modules/wallet/wallet.routes.js';
@@ -43,5 +43,6 @@ apiRouter.use('/anonymous-questions', anonymousRouter);
 apiRouter.use('/reports', reportsRouter);
 apiRouter.use('/waitlist', waitlistRouter);
 apiRouter.use('/uploads', uploadsRouter);
+apiRouter.use('/files', filesRouter);
 apiRouter.use('/', settingsRouter); // /settings, /currencies, /video-call
 apiRouter.use('/', pharmacyRouter); // /pharmacies, /products, /orders

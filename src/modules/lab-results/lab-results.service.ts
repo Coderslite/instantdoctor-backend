@@ -3,6 +3,7 @@ import { db } from '../../db/client.js';
 import { labResultFiles, labResults, serviceCharges, users } from '../../db/schema/index.js';
 import { notFound, serviceUnavailable } from '../../lib/errors.js';
 import { newId } from '../../lib/ids.js';
+import { attachFile, resolveFileUrls } from '../files/files.service.js';
 import { quoteFromUsd, resolveRegion } from '../pricing/pricing.service.js';
 
 /** Firestore `Charges` type for lab interpretation (legacy spelling preserved). */
@@ -21,9 +22,14 @@ export async function quoteForUser(userId: string) {
 async function withFiles(rows: Array<typeof labResults.$inferSelect>) {
   if (rows.length === 0) return [];
   const files = await db.select().from(labResultFiles).where(inArray(labResultFiles.labResultId, rows.map((r) => r.id)));
+  const urls = await resolveFileUrls([...files.map((f) => f.fileUrl), ...rows.map((r) => r.resultUrl)]);
+  const url = (value: string | null) => (value ? (urls.get(value) ?? (value.startsWith('file:') ? null : value)) : null);
   return rows.map((r) => ({
     ...r,
-    files: files.filter((f) => f.labResultId === r.id).map((f) => ({ fileUrl: f.fileUrl, fileType: f.fileType })),
+    resultUrl: url(r.resultUrl),
+    files: files
+      .filter((f) => f.labResultId === r.id)
+      .map((f) => ({ fileUrl: url(f.fileUrl), fileType: f.fileType })),
   }));
 }
 
@@ -31,7 +37,16 @@ async function withFiles(rows: Array<typeof labResults.$inferSelect>) {
  * Submits files for interpretation with a server-side quote. Paid results start
  * `awaiting_payment`; pay with POST /payments { purpose: "lab_result" }.
  */
-export async function createLabResult(userId: string, files: Array<{ fileUrl: string; fileType: string }>) {
+export async function createLabResult(
+  userId: string,
+  submitted: Array<{ fileId?: string; fileUrl?: string; fileType: string }>,
+) {
+  const files = await Promise.all(
+    submitted.map(async (f) => ({
+      fileType: f.fileType,
+      fileUrl: f.fileId ? await attachFile({ kind: 'patient', id: userId }, f.fileId, ['lab_result']) : f.fileUrl!,
+    })),
+  );
   const quote = await quoteForUser(userId);
   const id = newId();
   await db.transaction(async (tx) => {

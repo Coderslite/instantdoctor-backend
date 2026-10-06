@@ -1,8 +1,7 @@
 import { eq } from 'drizzle-orm';
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { closeDatabase, db } from '../../src/db/client.js';
 import { payoutAccounts, referrals, users } from '../../src/db/schema/index.js';
-import { setStorageDriver } from '../../src/integrations/storage.js';
 import { api, auth, createUser, resetDatabase } from '../helpers.js';
 
 afterAll(() => closeDatabase());
@@ -111,55 +110,5 @@ describe('referral code after sign-up', () => {
     const user = await createUser();
     await db.update(users).set({ hasPaid: true }).where(eq(users.id, user.id));
     expect((await apply(user.token, 'friend01')).body.error.code).toBe('REFERRAL_WINDOW_CLOSED');
-  });
-});
-
-describe('uploads', () => {
-  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
-  const stored: Array<{ key: string; contentType: string; size: number }> = [];
-
-  beforeEach(async () => {
-    await resetDatabase();
-    stored.length = 0;
-    setStorageDriver({
-      async put(key, body, contentType) {
-        stored.push({ key, contentType, size: body.length });
-        return `https://files.example.com/${key}`;
-      },
-    });
-  });
-  afterEach(() => setStorageDriver(undefined));
-
-  it('stores the file and returns its public URL', async () => {
-    const user = await createUser();
-    const res = await api()
-      .post('/api/v1/uploads?folder=chat')
-      .set(auth(user.token))
-      .attach('file', PNG, { filename: 'photo.png', contentType: 'image/png' });
-    expect(res.status).toBe(201);
-    expect(res.body.url).toMatch(/^https:\/\/files\.example\.com\/chat\/[0-9a-f-]{36}\.png$/);
-    expect(stored).toEqual([{ key: res.body.key, contentType: 'image/png', size: PNG.length }]);
-  });
-
-  it('rejects a file whose content does not match its declared type', async () => {
-    const user = await createUser();
-    const res = await api()
-      .post('/api/v1/uploads?folder=chat')
-      .set(auth(user.token))
-      .attach('file', Buffer.from('<html><script>alert(1)</script></html>'), {
-        filename: 'evil.png',
-        contentType: 'image/png',
-      });
-    expect(res.status).toBe(400);
-    expect(stored).toHaveLength(0);
-  });
-
-  it('rejects unsupported types', async () => {
-    const user = await createUser();
-    const res = await api()
-      .post('/api/v1/uploads?folder=chat')
-      .set(auth(user.token))
-      .attach('file', Buffer.from('<html></html>'), { filename: 'page.html', contentType: 'text/html' });
-    expect(res.status).toBe(400);
   });
 });

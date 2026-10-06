@@ -4,6 +4,7 @@ import { closeDatabase, databaseLabel } from './db/client.js';
 import { createApp } from './app.js';
 import { logger } from './lib/logger.js';
 import { purgeExpiredIdempotencyKeys } from './middleware/idempotency.js';
+import { purgeAbandonedUploads } from './modules/files/files.service.js';
 import { closeRealtime, initRealtime } from './realtime/gateway.js';
 
 const app = createApp();
@@ -11,14 +12,23 @@ const server = createServer(app);
 initRealtime(server);
 
 server.listen(env.PORT, () =>
-  logger.info({ port: env.PORT, env: env.NODE_ENV, database: databaseLabel }, 'Instant Doctor API listening'),
+  logger.info(
+    { port: env.PORT, env: env.NODE_ENV, database: databaseLabel },
+    'Instant Doctor API listening',
+  ),
 );
 
-const housekeeping = setInterval(() => {
-  purgeExpiredIdempotencyKeys()
-    .then((n) => n > 0 && logger.info({ purged: n }, 'Expired idempotency keys purged'))
-    .catch((err: unknown) => logger.error({ err }, 'Idempotency purge failed'));
-}, 60 * 60 * 1000);
+const housekeeping = setInterval(
+  () => {
+    purgeExpiredIdempotencyKeys()
+      .then((n) => n > 0 && logger.info({ purged: n }, 'Expired idempotency keys purged'))
+      .catch((err: unknown) => logger.error({ err }, 'Idempotency purge failed'));
+    purgeAbandonedUploads()
+      .then((n) => n > 0 && logger.info({ purged: n }, 'Abandoned uploads purged'))
+      .catch((err: unknown) => logger.error({ err }, 'Upload purge failed'));
+  },
+  60 * 60 * 1000,
+);
 housekeeping.unref();
 
 let shuttingDown = false;

@@ -5,6 +5,7 @@ import { isDuplicateKeyError } from '../../lib/db-errors.js';
 import { conflict, forbidden, notFound } from '../../lib/errors.js';
 import { newId } from '../../lib/ids.js';
 import { requireParticipant } from '../appointments/appointments.service.js';
+import { attachFile, resolveFileUrl, withResolvedUrls } from '../files/files.service.js';
 
 /** Support conversations are with this pseudo-participant. */
 export const SUPPORT_ID = 'admin';
@@ -45,10 +46,19 @@ export async function getReportForAppointment(userId: string, appointmentId: str
 
 export async function listMessages(userId: string, reportId: string) {
   await getReport(userId, reportId);
-  return db.select().from(reportMessages).where(eq(reportMessages.reportId, reportId)).orderBy(desc(reportMessages.createdAt));
+  const rows = await db
+    .select()
+    .from(reportMessages)
+    .where(eq(reportMessages.reportId, reportId))
+    .orderBy(desc(reportMessages.createdAt));
+  return withResolvedUrls(rows, 'fileUrl');
 }
 
-export async function sendMessage(userId: string, reportId: string, input: { message: string; fileUrl?: string; type: 'text' | 'image' | 'file' | 'voice' }) {
+export async function sendMessage(
+  userId: string,
+  reportId: string,
+  input: { message: string; fileUrl?: string; fileId?: string; type: 'text' | 'image' | 'file' | 'voice' },
+) {
   await getReport(userId, reportId);
   const row = {
     id: newId(),
@@ -57,7 +67,9 @@ export async function sendMessage(userId: string, reportId: string, input: { mes
     receiverId: SUPPORT_ID,
     type: input.type,
     message: input.message,
-    fileUrl: input.fileUrl ?? null,
+    fileUrl: input.fileId
+      ? await attachFile({ kind: 'patient', id: userId }, input.fileId, ['report_attachment'])
+      : (input.fileUrl ?? null),
     status: 'delivered' as const,
     createdAt: new Date(),
   };
@@ -65,7 +77,7 @@ export async function sendMessage(userId: string, reportId: string, input: { mes
     await tx.insert(reportMessages).values(row);
     await tx.update(reports).set({ updatedAt: new Date() }).where(eq(reports.id, reportId));
   });
-  return row;
+  return { ...row, fileUrl: await resolveFileUrl(row.fileUrl) };
 }
 
 export async function deleteReport(userId: string, reportId: string) {

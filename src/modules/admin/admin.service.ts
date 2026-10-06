@@ -1,10 +1,12 @@
 import { and, count, desc, eq, gte, like, lt, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { resolveFileUrl, withResolvedUrls } from '../files/files.service.js';
 import { alias } from 'drizzle-orm/mysql-core';
 import { db } from '../../db/client.js';
 import { admins, appointmentPackages, appointments, doctorProfiles, labResultFiles, labResults, orders, payments, payoutAccounts, pharmacies, productCategories, products, userMedicalProfiles, users } from '../../db/schema/index.js';
 import { hashPassword, verifyPassword } from '../../lib/crypto.js';
 import { badRequest, notFound, unauthorized } from '../../lib/errors.js';
 import { signAdminAccessToken } from '../../lib/tokens.js';
+import { closeAllPortalSessions, closePortalSession, openPortalSession, rotatePortalSession } from '../auth/portal-sessions.js';
 import { newId } from '../../lib/ids.js';
 import { deliver } from '../../integrations/mail/transport.js';
 import { escapeHtml, layout, paragraph, plainText } from '../../integrations/mail/layout.js';
@@ -17,11 +19,29 @@ const doctor = alias(users, 'doctor');
 const fullName = (first: SQLWrapper, last: SQLWrapper) => sql<string>`concat(${first}, ' ', ${last})`;
 const searchTerm = (value?: string) => value ? `%${value}%` : undefined;
 
-export async function login(email: string, password: string) {
+const adminSession = (admin: Pick<typeof admins.$inferSelect, 'id' | 'role'>, refreshToken: string) => ({
+  accessToken: signAdminAccessToken({ sub: admin.id, role: admin.role }),
+  refreshToken,
+  tokenType: 'Bearer' as const,
+});
+
+export async function login(email: string, password: string, userAgent?: string) {
   const [admin] = await db.select().from(admins).where(eq(admins.email, email.toLowerCase())).limit(1);
   if (!admin?.passwordHash || !(await verifyPassword(password, admin.passwordHash))) throw unauthorized('Invalid email or password');
-  return { admin: { id: admin.id, name: admin.name, email: admin.email, role: admin.role }, session: { accessToken: signAdminAccessToken({ sub: admin.id, role: admin.role }), tokenType: 'Bearer' as const } };
+  return { admin: { id: admin.id, name: admin.name, email: admin.email, role: admin.role }, session: adminSession(admin, await openPortalSession('admin', admin.id, userAgent)) };
 }
+
+export async function refreshSession(refreshToken: string, userAgent?: string) {
+  const rotated = await rotatePortalSession('admin', refreshToken, userAgent);
+  const [admin] = await db.select({ id: admins.id, role: admins.role }).from(admins).where(eq(admins.id, rotated.subjectId)).limit(1);
+  if (!admin) {
+    await closeAllPortalSessions('admin', rotated.subjectId);
+    throw unauthorized('Your session has ended. Please sign in again.');
+  }
+  return { session: adminSession(admin, rotated.refreshToken) };
+}
+
+export const logout = (refreshToken: string) => closePortalSession('admin', refreshToken);
 
 export async function dashboard() {
   const monthStart = new Date();
@@ -101,7 +121,7 @@ export async function listDoctors(query: ListQuery) {
   const where = and(...filters);
   const items = await db.select({ id: users.id, firstName: users.firstName, lastName: users.lastName, email: users.email, phoneNumber: users.phoneNumber, accountStatus: users.accountStatus, presence: users.presence, specialization: doctorProfiles.specialization, experienceYears: doctorProfiles.experienceYears, isAvailable: doctorProfiles.isAvailable, certificateUrl: doctorProfiles.certificateUrl, createdAt: users.createdAt }).from(users).leftJoin(doctorProfiles, eq(doctorProfiles.userId, users.id)).where(where).orderBy(desc(users.createdAt)).limit(query.limit).offset(query.offset);
   const [total] = await db.select({ value: count() }).from(users).where(eq(users.role, 'doctor'));
-  return { items, total: total?.value ?? 0, limit: query.limit, offset: query.offset };
+  return { items: await withResolvedUrls(items, 'certificateUrl'), total: total?.value ?? 0, limit: query.limit, offset: query.offset };
 }
 
 export async function getDoctor(id: string) {
@@ -113,7 +133,7 @@ export async function getDoctor(id: string) {
     db.select({ value: sql<number>`coalesce(sum(${appointments.doctorEarning}), 0)` }).from(appointments).where(and(eq(appointments.doctorId, id), eq(appointments.isPaid, true))),
     db.select({ id: appointments.id, patientName: fullName(patient.firstName, patient.lastName), packageLabel: appointments.packageLabel, status: appointments.status, startTime: appointments.startTime, endTime: appointments.endTime, price: appointments.price, currency: appointments.currency, isPaid: appointments.isPaid, doctorEarning: appointments.doctorEarning }).from(appointments).innerJoin(patient, eq(patient.id, appointments.userId)).where(eq(appointments.doctorId, id)).orderBy(desc(appointments.startTime)).limit(100),
   ]);
-  return { ...doctorRecord, appointmentCount: appointmentTotal?.value ?? 0, completedAppointmentCount: completedTotal?.value ?? 0, totalEarnings: earnings?.value ?? 0, recentAppointments };
+  return { ...doctorRecord, certificateUrl: await resolveFileUrl(doctorRecord.certificateUrl), appointmentCount: appointmentTotal?.value ?? 0, completedAppointmentCount: completedTotal?.value ?? 0, totalEarnings: earnings?.value ?? 0, recentAppointments };
 }
 
 type DoctorUpdate = { firstName?: string; lastName?: string; email?: string; phoneNumber?: string | null; gender?: string | null; country?: string | null; address?: string | null; currency?: string | null; specialization?: string | null; experienceYears?: number | null; bio?: string | null; isAvailable?: boolean; institution?: string | null; graduationYear?: string | null; housemanship?: string | null; housemanshipYear?: string | null; workAddress?: string | null; homeAddress?: string | null; certificateUrl?: string | null };
@@ -213,7 +233,7 @@ export async function listPharmacies(query: ListQuery) {
 
 type PharmacyInput = { name: string; email: string; password?: string; phoneNumber?: string | null; address?: string | null; latitude?: number | null; longitude?: number | null; deliveryFeePerKm?: number; discount?: number; image?: string | null; status?: string };
 export async function createPharmacy(input: PharmacyInput) { const id = newId(); const { password, ...values } = input; await db.insert(pharmacies).values({ id, ...values, email: values.email.toLowerCase(), passwordHash: password ? await hashPassword(password) : null }); return getAdminPharmacy(id); }
-export async function updatePharmacy(id: string, input: Partial<PharmacyInput>) { const [item] = await db.select({ id: pharmacies.id }).from(pharmacies).where(eq(pharmacies.id, id)).limit(1); if (!item) throw notFound('Pharmacy'); const { password, ...values } = input; await db.update(pharmacies).set({ ...values, ...(password ? { passwordHash: await hashPassword(password) } : {}) }).where(eq(pharmacies.id, id)); return getAdminPharmacy(id); }
+export async function updatePharmacy(id: string, input: Partial<PharmacyInput>) { const [item] = await db.select({ id: pharmacies.id }).from(pharmacies).where(eq(pharmacies.id, id)).limit(1); if (!item) throw notFound('Pharmacy'); const { password, ...values } = input; await db.update(pharmacies).set({ ...values, ...(password ? { passwordHash: await hashPassword(password) } : {}) }).where(eq(pharmacies.id, id)); if (password || (values.status && values.status !== 'active')) await closeAllPortalSessions('pharmacy', id); return getAdminPharmacy(id); }
 export async function getAdminPharmacy(id: string) {
   const [item] = await db.select().from(pharmacies).where(eq(pharmacies.id, id)).limit(1); if (!item) throw notFound('Pharmacy');
   const [productItems, orderItems, categories, [orderCount]] = await Promise.all([
@@ -294,14 +314,14 @@ export async function listLabResults(query: ListQuery) {
     db.select({ value: count() }).from(labResults).where(eq(labResults.status, 'awaiting_payment')),
     db.select({ value: count() }).from(labResults).where(eq(labResults.status, 'completed')),
   ]);
-  return { items, total: total?.value ?? 0, summary: { pending: pending?.value ?? 0, awaitingPayment: awaitingPayment?.value ?? 0, completed: completed?.value ?? 0 }, limit: query.limit, offset: query.offset };
+  return { items: await withResolvedUrls(items, 'resultUrl'), total: total?.value ?? 0, summary: { pending: pending?.value ?? 0, awaitingPayment: awaitingPayment?.value ?? 0, completed: completed?.value ?? 0 }, limit: query.limit, offset: query.offset };
 }
 
 export async function getLabResult(id: string) {
   const [item] = await db.select({ id: labResults.id, patientId: labResults.userId, patientName: fullName(users.firstName, users.lastName), patientEmail: users.email, patientPhone: users.phoneNumber, status: labResults.status, price: labResults.price, currency: labResults.currency, resultUrl: labResults.resultUrl, testName: labResults.testName, laboratoryName: labResults.laboratoryName, referenceNumber: labResults.referenceNumber, sampleCollectedAt: labResults.sampleCollectedAt, resultDate: labResults.resultDate, interpretation: labResults.interpretation, adminResponse: labResults.adminResponse, reviewedAt: labResults.reviewedAt, opened: labResults.opened, createdAt: labResults.createdAt, updatedAt: labResults.updatedAt }).from(labResults).innerJoin(users, eq(users.id, labResults.userId)).where(eq(labResults.id, id)).limit(1);
   if (!item) throw notFound('Lab result');
   const files = await db.select({ fileUrl: labResultFiles.fileUrl, fileType: labResultFiles.fileType }).from(labResultFiles).where(eq(labResultFiles.labResultId, id));
-  return { ...item, files };
+  return { ...item, resultUrl: await resolveFileUrl(item.resultUrl), files: await withResolvedUrls(files, 'fileUrl') };
 }
 
 type LabResultUpdate = { status?: typeof labResults.status.enumValues[number]; resultUrl?: string; testName?: string | null; laboratoryName?: string | null; referenceNumber?: string | null; sampleCollectedAt?: Date | null; resultDate?: Date | null; interpretation?: string | null; adminResponse?: string | null };

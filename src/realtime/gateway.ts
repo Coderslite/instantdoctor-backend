@@ -1,7 +1,7 @@
 import type { Server as HttpServer } from 'node:http';
 import { and, eq, or } from 'drizzle-orm';
 import { Server, type Socket } from 'socket.io';
-import { env } from '../config/env.js';
+import { corsOrigin } from '../config/env.js';
 import { db } from '../db/client.js';
 import { appointments, users } from '../db/schema/index.js';
 import { logger } from '../lib/logger.js';
@@ -33,7 +33,7 @@ const appointmentRoom = (id: string) => `appointment:${id}`;
 
 export function initRealtime(httpServer: HttpServer): Server {
   io = new Server(httpServer, {
-    cors: { origin: env.CORS_ORIGINS === '*' ? true : env.CORS_ORIGINS.split(',') },
+    cors: { origin: corsOrigin },
   });
 
   io.use((socket, next) => {

@@ -7,3 +7,5 @@ process.env.MAIL_DRIVER = 'log';
 process.env.FIREBASE_WEB_API_KEY = '';
 process.env.BOOKING_MIN_LEAD_MINUTES = '5';
 process.env.BOOKING_HOLD_MINUTES = '30';
+process.env.UPLOAD_DIR = `${process.env.TMPDIR ?? '/tmp'}/instantdoctor-test-uploads`;
+process.env.STORAGE_DRIVER = 'local';

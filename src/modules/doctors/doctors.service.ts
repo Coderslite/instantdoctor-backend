@@ -1,4 +1,5 @@
 import { and, asc, avg, count, desc, eq, gte, inArray, isNotNull, ne, sql } from 'drizzle-orm';
+import { attachFile, resolveFileUrl } from '../files/files.service.js';
 import { db, type Executor } from '../../db/client.js';
 import { appointments, doctorProfiles, reviews, users } from '../../db/schema/index.js';
 import { notFound } from '../../lib/errors.js';
@@ -107,4 +108,13 @@ export async function doctorPushTokens(executor: Executor = db, onlyDoctorId?: s
     .from(users)
     .where(and(eq(users.role, 'doctor'), onlyDoctorId ? eq(users.id, onlyDoctorId) : undefined));
   return rows.map((r) => r.token);
+}
+
+export async function setOwnCertificate(doctorId: string, fileId: string) {
+  const certificateUrl = await attachFile({ kind: 'doctor', id: doctorId }, fileId, ['doctor_document']);
+  await db
+    .insert(doctorProfiles)
+    .values({ userId: doctorId, certificateUrl })
+    .onDuplicateKeyUpdate({ set: { certificateUrl } });
+  return { certificateUrl: await resolveFileUrl(certificateUrl) };
 }

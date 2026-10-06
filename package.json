@@ -23,13 +23,15 @@
     "pharmacy:create": "tsx --env-file=.env scripts/create-pharmacy.ts",
     "pharmacy:seed-categories": "tsx --env-file=.env scripts/seed-pharmacy-categories.ts",
     "blog:backfill": "tsx --env-file=.env scripts/backfill-blog.ts",
-    "blog:reseed": "tsx --env-file=.env scripts/reseed-blog.ts"
+    "blog:reseed": "tsx --env-file=.env scripts/reseed-blog.ts",
+    "storage:cors": "tsx --env-file=.env scripts/configure-storage-cors.ts"
   },
   "license": "UNLICENSED",
   "description": "Instant Doctor core API — SQL-backed replacement for the Firestore data layer of the patient app",
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^9.1.0",
     "@aws-sdk/client-s3": "^3.1146.0",
+    "@aws-sdk/s3-request-presigner": "^3.1146.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "country-region-data": "^4.1.0",

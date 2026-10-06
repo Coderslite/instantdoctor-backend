@@ -18,13 +18,24 @@ import { initializePaymentSchema } from '../modules/payments/payments.service.js
 import * as pharmacy from '../modules/pharmacy/pharmacy.schemas.js';
 import { listReferralsQuery } from '../modules/referrals/referrals.schemas.js';
 import * as reports from '../modules/reports/reports.schemas.js';
-import { uploadQuery } from '../modules/uploads/uploads.schemas.js';
+import { FILE_POLICIES, FILE_PURPOSES } from '../modules/files/file-policies.js';
+import { presignUploadSchema, uploadDocSchema } from '../modules/files/files.schemas.js';
+import { certificateSchema } from '../modules/doctors/doctors.schemas.js';
 import * as users from '../modules/users/users.schemas.js';
 import { joinWaitlistSchema, waitlistStatusQuery } from '../modules/waitlist/waitlist.schemas.js';
 import { listTransactionsQuery, transferSchema } from '../modules/wallet/wallet.schemas.js';
 import * as c from './components.js';
 
 const registry = new OpenAPIRegistry();
+
+const PURPOSE_TABLE = [
+  '| Purpose | Who can upload | Visibility | Max size |',
+  '| --- | --- | --- | --- |',
+  ...FILE_PURPOSES.map((purpose) => {
+    const policy = FILE_POLICIES[purpose];
+    return `| \`${purpose}\` | ${policy.uploaders.join(', ')} | ${policy.visibility} | ${Math.round(policy.maxBytes / 1024 / 1024)} MB |`;
+  }),
+].join('\n');
 
 registry.registerComponent('securitySchemes', 'bearerAuth', {
   type: 'http',
@@ -1024,8 +1035,8 @@ op('delete', '/admin/blog/authors/:id', {
 });
 op('post', '/admin/blog/uploads', {
   tag: 'Blog admin',
-  summary: 'Upload a blog image (PNG, JPEG, GIF or WebP)',
-  description: ADMIN,
+  summary: 'Upload a blog image (PNG, JPEG, GIF or WebP, max 8 MB)',
+  description: `${ADMIN} Stored as a public \`blog_image\` file.`,
   body: { multipart: z.object({ file: z.string().meta({ format: 'binary' }) }) },
   ok: { 201: c.StoredFile },
   errors: { ...adminWrite, 502: 'STORAGE_ERROR — upload to storage failed; retry' },
@@ -1062,14 +1073,154 @@ op('get', '/waitlist/status', {
   ok: { 200: z.object({ joined: z.boolean() }) },
 });
 op('post', '/uploads', {
-  tag: 'Misc',
-  summary: 'Upload a file (images, PDF, Word, audio; max 15 MB)',
-  description:
-    'Returns a permanent public URL (Cloudflare R2 in production) to use as `fileUrl` in chat, reports or lab results, or as `photoUrl`. Images and PDFs must match their declared type.',
-  query: uploadQuery,
-  body: { multipart: z.object({ file: z.string().meta({ format: 'binary' }) }) },
+  tag: 'Files',
+  summary: 'Upload a file for a purpose (patients and doctors)',
+  description: [
+    'multipart/form-data with `purpose` and `file`. Each purpose has its own allowed types, size limit, uploaders and visibility:',
+    PURPOSE_TABLE,
+    '**Public** files get a permanent CDN link. **Private** files (medical records, chat attachments, doctor documents) are never publicly reachable: the API returns short-lived signed links, refreshed every time the file is returned to someone allowed to see it.',
+    'Reference private files by `id`: send `fileId` in chat messages, report messages, lab result submissions and `PUT /doctors/me/certificate`.',
+  ].join('\n\n'),
+  body: { multipart: uploadDocSchema },
   ok: { 201: c.StoredFile },
-  errors: { 502: 'STORAGE_ERROR — upload to storage failed; retry' },
+  errors: {
+    403: 'FORBIDDEN — your role cannot upload for this purpose',
+    422: 'UNSUPPORTED_FILE_TYPE | FILE_TOO_LARGE',
+    502: 'STORAGE_ERROR — upload to storage failed; retry',
+  },
+});
+op('post', '/admin/auth/refresh', {
+  tag: 'Auth',
+  summary: 'Renew a admin session',
+  description:
+    'Exchange the `refreshToken` from login for a new access token and refresh token. Call it when a request returns 401. Each refresh token is single-use; a second use within 30 seconds (for example, two tabs refreshing together) is allowed, and later reuse ends the session.',
+  auth: false,
+  body: auth.refreshSchema,
+  ok: { 200: z.object({ session: c.Session }) },
+});
+op('post', '/admin/auth/logout', {
+  tag: 'Auth',
+  summary: 'Sign a admin out on this device',
+  auth: false,
+  body: auth.refreshSchema,
+  ok: { 204: null },
+});
+op('post', '/pharmacy-portal/auth/refresh', {
+  tag: 'Auth',
+  summary: 'Renew a pharmacy session',
+  description:
+    'Exchange the `refreshToken` from login for a new access token and refresh token. Call it when a request returns 401. Each refresh token is single-use; a second use within 30 seconds (for example, two tabs refreshing together) is allowed, and later reuse ends the session.',
+  auth: false,
+  body: auth.refreshSchema,
+  ok: { 200: z.object({ session: c.Session }) },
+});
+op('post', '/pharmacy-portal/auth/logout', {
+  tag: 'Auth',
+  summary: 'Sign a pharmacy out on this device',
+  auth: false,
+  body: auth.refreshSchema,
+  ok: { 204: null },
+});
+op('post', '/admin/uploads', {
+  tag: 'Files',
+  summary: 'Upload a file as an admin',
+  description:
+    'Same as `POST /uploads`, authenticated with an **admin** token. Admin purposes: `doctor_document`, `lab_result_report`, `blog_image`, `product_image`, `pharmacy_logo`. Attach a `doctor_document` to a doctor with `PATCH /admin/doctors/{id}` `{ certificateFileId }`.',
+  body: { multipart: uploadDocSchema },
+  ok: { 201: c.StoredFile },
+  errors: { 403: 'FORBIDDEN', 422: 'UNSUPPORTED_FILE_TYPE | FILE_TOO_LARGE', 502: 'STORAGE_ERROR' },
+});
+op('post', '/pharmacy-portal/uploads', {
+  tag: 'Files',
+  summary: 'Upload a product image or logo as a pharmacy',
+  description:
+    'Authenticated with a **pharmacy** token. Purposes: `product_image`, `pharmacy_logo` (public). Use the returned `url` in product `images` or the pharmacy `image`.',
+  body: { multipart: uploadDocSchema },
+  ok: { 201: c.StoredFile },
+  errors: { 403: 'FORBIDDEN', 422: 'UNSUPPORTED_FILE_TYPE | FILE_TOO_LARGE', 502: 'STORAGE_ERROR' },
+});
+const DIRECT_UPLOAD = [
+  '**Preferred upload flow** — the file goes straight to storage, never through the API:',
+  '1. `POST …/uploads/presign` with `purpose`, `contentType`, exact `size` (bytes) and optional `name`. The purpose policy (type, size, who may upload) is checked here.',
+  '2. `PUT` the raw bytes to `upload.url` with `upload.headers`. The URL only accepts that exact type and size, and expires after 15 minutes.',
+  '3. `POST …/uploads/{fileId}/complete`. The API checks the stored object (size, type, real file signature) and returns the file. Only completed files can be attached; unconfirmed uploads are deleted after 24 hours.',
+].join('\n\n');
+const presignErrors = {
+  403: 'FORBIDDEN — your role cannot upload for this purpose',
+  422: 'UNSUPPORTED_FILE_TYPE | FILE_TOO_LARGE',
+} as const;
+const completeErrors = {
+  400: 'BAD_REQUEST — file content does not match its declared type (the upload is discarded)',
+  404: 'NOT_FOUND — no such pending upload of yours',
+  409: 'UPLOAD_NOT_RECEIVED — nothing has been PUT to the upload URL yet',
+  422: 'UPLOAD_MISMATCH — stored size or type differs from what was declared (the upload is discarded)',
+  502: 'STORAGE_ERROR',
+} as const;
+const uploadIdParam = z.object({
+  id: z.string().meta({ description: 'The `fileId` from presign' }),
+});
+for (const [prefix, who] of [
+  ['', 'patients and doctors'],
+  ['/admin', 'admins'],
+  ['/pharmacy-portal', 'pharmacies'],
+] as const) {
+  op('post', `${prefix}/uploads/presign`, {
+    tag: 'Files',
+    summary: `Start a direct upload (${who})`,
+    description: `${DIRECT_UPLOAD}\n\n${PURPOSE_TABLE}`,
+    body: presignUploadSchema,
+    ok: { 201: c.UploadSession },
+    errors: presignErrors,
+  });
+  op('post', `${prefix}/uploads/:id/complete`, {
+    tag: 'Files',
+    summary: `Confirm a direct upload (${who})`,
+    description: 'Verifies the stored object and makes the file usable. Safe to retry.',
+    params: uploadIdParam,
+    ok: { 200: c.StoredFile },
+    errors: completeErrors,
+  });
+}
+op('post', '/admin/lab-results/:id/result', {
+  tag: 'Files',
+  summary: 'Publish an interpreted lab result from an uploaded file (admins)',
+  description:
+    'Upload with purpose `lab_result_report` via `/admin/uploads/presign`, then send its `fileId` with any result fields. Marks the result completed.',
+  params: idParam,
+  body: z.object({
+    fileId: z.string(),
+    testName: z.string().nullable().optional(),
+    laboratoryName: z.string().nullable().optional(),
+    interpretation: z.string().nullable().optional(),
+    adminResponse: z.string().nullable().optional(),
+  }),
+  ok: {
+    201: z
+      .object({ id: z.string(), status: z.string(), resultUrl: z.string().nullable() })
+      .passthrough(),
+  },
+  errors: {
+    403: 'FORBIDDEN — requires the admin role',
+    404: 'NOT_FOUND',
+    422: 'WRONG_FILE_PURPOSE',
+  },
+});
+op('get', '/files/:id', {
+  tag: 'Files',
+  summary: 'One of my uploads, with a fresh link',
+  description: 'Use when a signed link has expired.',
+  params: idParam,
+  ok: { 200: c.StoredFile },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('put', '/doctors/me/certificate', {
+  tag: 'Files',
+  summary: 'Attach my licence or certificate (doctors)',
+  description: 'Upload first with purpose `doctor_document`, then send its `fileId`.',
+  role: 'doctor',
+  body: certificateSchema,
+  ok: { 200: z.object({ certificateUrl: z.url().nullable() }) },
+  errors: { 404: 'NOT_FOUND — file is not yours', 422: 'WRONG_FILE_PURPOSE' },
 });
 op('get', '/settings', {
   tag: 'Misc',
@@ -1137,6 +1288,11 @@ export function buildOpenApiDocument(serverUrl: string) {
       { name: 'Health', description: 'Lab results and medication tracking' },
       { name: 'Content', description: 'Health tips and anonymous questions' },
       { name: 'Notifications' },
+      {
+        name: 'Files',
+        description:
+          'Uploads for every purpose: avatars, chat, lab results, doctor documents, blog and product images',
+      },
       { name: 'Misc' },
       { name: 'System' },
     ],

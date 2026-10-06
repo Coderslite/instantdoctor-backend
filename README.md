@@ -10,7 +10,7 @@ on MySQL.
 | HTTP | Express 5, Zod validation, Helmet, rate limiting |
 | Database | MySQL 8 locally, TiDB Cloud live (MySQL-compatible), via Drizzle ORM + `mysql2` |
 | Realtime | Socket.IO (replaces Firestore `snapshots()` streams) |
-| Auth | Email/password (bcrypt) + Google + Apple, JWT access tokens, rotating refresh tokens |
+| Auth | Email/password (bcrypt) + Google + Apple, JWT access tokens, rotating refresh tokens (also for the admin and pharmacy portals: `POST /admin/auth/refresh`, `POST /pharmacy-portal/auth/refresh`) |
 | Payments | Stripe, Paystack, Flutterwave behind one provider interface |
 | Push / Mail | FCM via `firebase-admin`; transactional email over SMTP (nodemailer) with branded templates |
 | Tests | Vitest + Supertest against a real MySQL test database |
@@ -218,21 +218,66 @@ Reset tokens are stored hashed. A token works once, even if submitted twice at t
 
 ## File storage (Cloudflare R2)
 
-`POST /api/v1/uploads` streams the file to storage and returns its permanent public `url`. Images and
-PDFs are checked by their leading bytes, so a file mislabelled as `image/png` is rejected.
+All uploads go through one service (`src/modules/files`). Every upload declares a **purpose**. The purpose
+decides who may upload, which types and sizes are allowed, and whether the file is public or private.
 
-| `STORAGE_DRIVER` | Where files go | URL |
+| Purpose | Visibility | Max | Uploaded by | Used for |
+| --- | --- | --- | --- | --- |
+| `avatar` | public | 5 MB | patient, doctor | Profile photo |
+| `chat_attachment` | private | 20 MB | patient, doctor | Images, files and voice notes in chat |
+| `lab_result` | private | 15 MB | patient | Lab result submissions |
+| `report_attachment` | private | 15 MB | patient | Report attachments |
+| `doctor_document` | private | 10 MB | doctor, admin | Licences and certificates |
+| `lab_result_report` | private | 15 MB | admin | Lab result report sent back to the patient |
+| `blog_image` | public | 8 MB | admin | Blog posts |
+| `product_image`, `pharmacy_logo` | public | 5 MB | pharmacy, admin | Pharmacy catalogue |
+
+The full list lives in `file-policies.ts`; adding a purpose there is all a new feature needs.
+
+**Upload, then attach.** Upload first and get back `{ id, url, visibility, urlExpiresAt, … }`. Then pass the
+`fileId` to the feature that uses it:
+
+```
+POST /api/v1/uploads?purpose=chat_attachment        (multipart "file")
+POST /api/v1/appointments/:id/messages   { "type": "image", "fileId": "…" }
+```
+
+The server checks that the caller owns the file and that it was uploaded for the right purpose
+(`WRONG_FILE_PURPOSE` otherwise). The upload endpoints are:
+
+- `POST /uploads` for patients and doctors.
+- `POST /admin/uploads` and `POST /admin/blog/uploads` for admins.
+- `POST /pharmacy-portal/uploads` for pharmacies.
+
+`GET /files/:id` returns a fresh link for one of your own files.
+
+**Public vs private.**
+- Public files get a permanent URL and are cached as immutable.
+- Private files are never publicly reachable. The database stores a reference (`file:<id>`), and every
+  API response turns it into a signed link that expires after `FILE_URL_TTL_SECONDS` (1 hour by default).
+  Clients should not store these links; fetch the resource again for a fresh one. The app caches images by
+  the URL without its query string, so a new signature does not trigger a new download.
+
+The server checks each file's leading bytes, so a file mislabelled as `image/png` is rejected.
+
+| `STORAGE_DRIVER` | Where files go | Links |
 | --- | --- | --- |
-| `local` (default) | `UPLOAD_DIR` on this machine | `PUBLIC_BASE_URL/files/…`. Dev only: the links point at this machine. |
-| `r2` | Cloudflare R2 bucket | `R2_PUBLIC_URL/…`. Works on any device and survives redeploys. |
+| `local` (default) | `UPLOAD_DIR/{public,private}` on this machine | Public: `PUBLIC_BASE_URL/files/public/…`. Private: HMAC-signed `/files/private/…?expires=&signature=`. Dev only. |
+| `r2` | Two Cloudflare R2 buckets | Public: `R2_PUBLIC_URL/…`. Private: S3 presigned URLs. |
 
 To set up R2:
-1. Create a bucket in the Cloudflare dashboard (R2).
-2. Give the bucket public access: connect a custom domain (recommended, e.g. `files.instantdoctor.co`) or enable its `r2.dev` URL.
-3. Create an R2 API token with **Object Read & Write** access, scoped to that bucket.
-4. Set `STORAGE_DRIVER=r2`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` and `R2_PUBLIC_URL`. The server refuses to start if any of these are missing.
+1. Create two buckets in the Cloudflare dashboard, e.g. `instantdoctor` (public) and `instantdoctor-private`.
+2. Give **only the public bucket** public access: connect a custom domain (recommended, e.g. `files.instantdoctor.co`) or enable its `r2.dev` URL. Leave the private bucket with no public access.
+3. Create an R2 API token with **Object Read & Write** access, scoped to both buckets.
+4. Set `STORAGE_DRIVER=r2` and these variables:
+   - `R2_ACCOUNT_ID`
+   - `R2_ACCESS_KEY_ID`
+   - `R2_SECRET_ACCESS_KEY`
+   - `R2_PUBLIC_BUCKET`
+   - `R2_PRIVATE_BUCKET`
+   - `R2_PUBLIC_URL`
 
-Object keys are random UUIDs, so files are served with `Cache-Control: immutable`.
+   The server refuses to start if any are missing, or if both bucket variables name the same bucket.
 
 ## Email
 
@@ -278,7 +323,7 @@ All routes are under `/api/v1` and require `Authorization: Bearer <accessToken>`
 | Wallet & referrals | `GET /wallet`, `GET /wallet/transactions`, `POST /wallet/transfers`, `GET /referrals?month=YYYY-MM`, `GET /referrals/summary` |
 | Health | `GET /lab-results/price`, `POST/GET /lab-results`, `POST /lab-results/:id/opened`, `DELETE /lab-results/:id`, `GET/POST /medications`, `GET/PATCH/DELETE /medications/:id`, `PUT /medications/:id/doses` |
 | Content | `GET /health-tips/categories`, `GET /health-tips?categoryId`, `GET /health-tips/:id` (records view), `GET /health-tips/:id/related`, `POST /health-tips/:id/like`, `GET/POST/DELETE /anonymous-questions` |
-| Misc | `GET /notifications`, `GET /notifications/unread-count`, `POST /notifications/read-all`, `POST /waitlist`, `GET /waitlist/status`, `POST /uploads?folder=chat` (multipart `file`), `GET /settings` (public), `GET /currencies` (public), `GET /video-call/credentials` |
+| Misc | `GET /notifications`, `GET /notifications/unread-count`, `POST /notifications/read-all`, `POST /waitlist`, `GET /waitlist/status`, `POST /uploads?purpose=chat_attachment` (multipart `file`), `GET /files/:id`, `GET /settings` (public), `GET /currencies` (public), `GET /video-call/credentials` |
 
 Errors always look like `{ "error": { "code": "SLOT_UNAVAILABLE", "message": "…", "details": … } }`.
 
