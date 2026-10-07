@@ -59,7 +59,7 @@ export async function dashboard() {
     db.select({ value: count() }).from(appointments).where(eq(appointments.status, 'cancelled')),
     db.select({ value: sql<number>`coalesce(sum(${payments.amount}), 0)` }).from(payments).where(eq(payments.status, 'succeeded')),
     db.select({ doctorEscrow: sql<number>`coalesce(sum(case when ${appointments.isTrial} then 0 else coalesce(${appointments.doctorEarning}, ${appointments.price} * 0.6) end), 0)`, platformEarnings: sql<number>`coalesce(sum(${appointments.price} - case when ${appointments.isTrial} then 0 else coalesce(${appointments.doctorEarning}, ${appointments.price} * 0.6) end), 0)` }).from(appointments).where(eq(appointments.isPaid, true)),
-    db.select({ date: sql<string>`date_format(${appointments.startTime}, '%Y-%m-%d')`, value: count() }).from(appointments).where(and(gte(appointments.startTime, monthStart), lt(appointments.startTime, nextMonth))).groupBy(sql`date(${appointments.startTime})`).orderBy(sql`date(${appointments.startTime})`),
+    db.select({ date: sql<string>`date_format(${appointments.startTime}, '%Y-%m-%d')`, value: count() }).from(appointments).where(and(gte(appointments.startTime, monthStart), lt(appointments.startTime, nextMonth))).groupBy(sql`1`).orderBy(sql`1`),
   ]);
   return { patients: patientCount?.value ?? 0, doctors: doctorCount?.value ?? 0, appointments: appointmentCount?.value ?? 0, pendingAppointments: pendingCount?.value ?? 0, activeAppointments: activeCount?.value ?? 0, completedAppointments: completedCount?.value ?? 0, cancelledAppointments: cancelledCount?.value ?? 0, monthlyAppointments, revenue: revenue?.value ?? 0, platformEarnings: appointmentEarnings?.platformEarnings ?? 0, doctorEscrow: appointmentEarnings?.doctorEscrow ?? 0 };
 }
