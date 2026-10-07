@@ -16,7 +16,7 @@ import { users } from './users.js';
 export const PAYMENT_PROVIDERS = ['stripe', 'paystack', 'flutterwave'] as const;
 export type PaymentProviderName = (typeof PAYMENT_PROVIDERS)[number];
 
-export const PAYMENT_PURPOSES = ['appointment', 'order_checkout', 'lab_result', 'wallet_topup'] as const;
+export const PAYMENT_PURPOSES = ['appointment', 'order_checkout', 'lab_result', 'wallet_topup', 'family_subscription'] as const;
 export type PaymentPurpose = (typeof PAYMENT_PURPOSES)[number];
 
 export const PAYMENT_METHODS = ['card', 'bank_transfer'] as const;
@@ -71,6 +71,29 @@ export const payments = mysqlTable(
     index('payments_user_idx').on(t.userId, t.createdAt),
     index('payments_provider_ref_idx').on(t.provider, t.providerReference),
   ],
+);
+
+export const FAMILY_SUBSCRIPTION_STATUSES = ['trialing', 'active', 'expired'] as const;
+export type FamilySubscriptionStatus = (typeof FAMILY_SUBSCRIPTION_STATUSES)[number];
+
+/** One Family Care membership per account. Billing is renewed in-app each month. */
+export const familySubscriptions = mysqlTable(
+  'family_subscriptions',
+  {
+    id: id('id').primaryKey(),
+    userId: id('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    status: mysqlEnum('status', FAMILY_SUBSCRIPTION_STATUSES).notNull().default('trialing'),
+    trialStartedAt: timestamp('trial_started_at').notNull(),
+    trialEndsAt: timestamp('trial_ends_at').notNull(),
+    currentPeriodStart: timestamp('current_period_start'),
+    currentPeriodEnd: timestamp('current_period_end'),
+    consultationCreditsUsed: int('consultation_credits_used').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('family_subscriptions_user_uq').on(t.userId)],
 );
 
 /** Inbound webhook log; the unique key makes redelivered events no-ops. */

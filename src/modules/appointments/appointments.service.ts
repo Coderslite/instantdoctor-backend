@@ -20,6 +20,8 @@ import { confirmAppointment } from '../payments/fulfillment.js';
 import { quoteFromUsd, resolveRegion } from '../pricing/pricing.service.js';
 import { getAppSettings, getTrialDoctorId } from '../settings/settings.service.js';
 import { serializeUserSummary } from '../users/users.serializer.js';
+import { requireAvailableFamilyCredit } from '../subscriptions/subscriptions.service.js';
+import { AFRICAN_COUNTRIES } from '../pricing/pricing.service.js';
 import type { CreateAppointmentInput } from './appointments.schemas.js';
 
 const TRIAL_DURATION_SECONDS = 30 * 60;
@@ -67,6 +69,8 @@ interface BookingPlan {
   price: number;
   currency: string | null;
   priceUsd: number | null;
+  useFamilyCredit: boolean;
+  subscriptionCreditEarning: number | null;
 }
 
 async function planBooking(userId: string, input: CreateAppointmentInput): Promise<BookingPlan> {
@@ -82,6 +86,8 @@ async function planBooking(userId: string, input: CreateAppointmentInput): Promi
       price: 0,
       currency: null,
       priceUsd: 0,
+      useFamilyCredit: false,
+      subscriptionCreditEarning: null,
     };
   }
 
@@ -92,6 +98,9 @@ async function planBooking(userId: string, input: CreateAppointmentInput): Promi
     .limit(1);
   if (!pkg) throw badRequest('Unknown or inactive package', [{ path: 'packageId', message: 'not found' }]);
 
+  if (input.useFamilyCredit && pkg.type !== 'basic') {
+    throw badRequest('Family Care credits cover virtual GP consultations only', [{ path: 'packageId', message: 'select a GP package' }]);
+  }
   const doctorId = input.doctorId ?? null;
   if (doctorId) {
     const [doctor] = await db
@@ -108,6 +117,7 @@ async function planBooking(userId: string, input: CreateAppointmentInput): Promi
   if (!user) throw notFound('User');
   // Price is always computed server-side; the client never supplies an amount.
   const quote = await quoteFromUsd(pkg.amountUsd, resolveRegion(user));
+  const african = AFRICAN_COUNTRIES.has(user.country?.toUpperCase() ?? '');
 
   return {
     doctorId,
@@ -115,9 +125,12 @@ async function planBooking(userId: string, input: CreateAppointmentInput): Promi
     packageLabel: pkg.name,
     packageType: pkg.type,
     durationSeconds: pkg.durationSeconds,
-    price: quote.amount,
-    currency: quote.currency,
-    priceUsd: quote.amountUsd,
+    price: input.useFamilyCredit ? 0 : quote.amount,
+    currency: input.useFamilyCredit ? (african ? 'NGN' : 'USD') : quote.currency,
+    priceUsd: input.useFamilyCredit ? 0 : quote.amountUsd,
+    useFamilyCredit: input.useFamilyCredit,
+    // One credit is funded from the membership: 60% of ₦5,000/$10.
+    subscriptionCreditEarning: input.useFamilyCredit ? (african ? 3000 : 6) : null,
   };
 }
 
@@ -175,6 +188,10 @@ export async function createAppointment(
         }
       }
 
+      const subscription = plan.useFamilyCredit
+          ? await requireAvailableFamilyCredit(tx, userId)
+          : null;
+
       await tx.insert(appointments).values({
         id: appointmentId,
         userId,
@@ -191,13 +208,16 @@ export async function createAppointment(
         currency: plan.currency,
         priceUsd: plan.priceUsd,
         isTrial: input.isTrial,
+        isSubscriptionCredit: plan.useFamilyCredit,
+        subscriptionId: subscription?.id ?? null,
+        doctorEarning: plan.subscriptionCreditEarning,
         holdExpiresAt: holdUntil(),
         idempotencyKey: idempotencyKey ?? null,
         timeZone: validTimeZone(timeZone),
       });
 
       // Trials need no payment: confirm immediately with the same side effects as a paid booking.
-      return input.isTrial ? (await confirmAppointment(tx, appointmentId)).effects : [];
+      return input.isTrial || plan.useFamilyCredit ? (await confirmAppointment(tx, appointmentId)).effects : [];
     });
   } catch (err) {
     // A concurrent request with the same key won the race: return its result.

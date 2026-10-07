@@ -1,10 +1,11 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { z } from 'zod';
 import { db } from '../../db/client.js';
 import { medicationDoses, medications } from '../../db/schema/index.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 import { newId } from '../../lib/ids.js';
 import { mailer } from '../../integrations/mailer.js';
+import { resolveProfileId } from '../family/family.service.js';
 import type { doseSchema, medicationSchema, updateMedicationSchema } from './medications.schemas.js';
 
 type Medication = typeof medications.$inferSelect;
@@ -36,6 +37,7 @@ function serialize(m: Medication, doses: Dose[]) {
   const dailyMissedTimes = daily('missed');
   return {
     id: m.id,
+    profileId: m.profileId,
     name: m.name,
     prescription: m.prescription,
     startTime: m.startTime,
@@ -59,8 +61,13 @@ async function requireOwned(userId: string, id: string) {
   return row;
 }
 
-export async function listMedications(userId: string) {
-  const rows = await db.select().from(medications).where(eq(medications.userId, userId)).orderBy(medications.startTime);
+/** Medications for one person: a family profile, or the account owner when [profileId] is null. */
+export async function listMedications(userId: string, profileId: string | null = null) {
+  const rows = await db
+    .select()
+    .from(medications)
+    .where(and(eq(medications.userId, userId), profileId ? eq(medications.profileId, profileId) : isNull(medications.profileId)))
+    .orderBy(medications.startTime);
   if (rows.length === 0) return [];
   const doses = await db.select().from(medicationDoses).where(inArray(medicationDoses.medicationId, rows.map((r) => r.id)));
   return rows.map((m) => serialize(m, doses.filter((d) => d.medicationId === m.id)));
@@ -73,11 +80,13 @@ export async function getMedication(userId: string, id: string) {
 }
 
 export async function createMedication(userId: string, input: z.infer<typeof medicationSchema>) {
+  const profileId = await resolveProfileId(userId, input.profileId);
   const id = newId();
   await db.insert(medications).values({
     id,
     userId,
     ...input,
+    profileId,
     morningTime: toSqlTime(input.morningTime),
     middayTime: toSqlTime(input.middayTime),
     eveningTime: toSqlTime(input.eveningTime),

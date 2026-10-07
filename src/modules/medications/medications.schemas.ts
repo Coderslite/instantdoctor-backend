@@ -6,6 +6,8 @@ const clockTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Expected HH:MM'
 
 export const medicationSchema = z
   .object({
+    /** Family member the medication is for; null/absent = the account owner. */
+    profileId: z.uuid().nullable().default(null),
     name: z.string().trim().min(1).max(255),
     prescription: z.string().trim().max(5000).default(''),
     startTime: isoDateTime(),

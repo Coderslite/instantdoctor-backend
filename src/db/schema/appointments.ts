@@ -12,6 +12,7 @@ import {
 } from 'drizzle-orm/mysql-core';
 import { createdAt, id, money, timestamp, updatedAt } from '../columns.js';
 import { users } from './users.js';
+import { familySubscriptions } from './payments.js';
 
 export const PACKAGE_TYPES = ['basic', 'standard', 'special'] as const;
 export type PackageType = (typeof PACKAGE_TYPES)[number];
@@ -75,6 +76,9 @@ export const appointments = mysqlTable(
     currency: varchar('currency', { length: 3 }),
     priceUsd: money('price_usd'),
     isTrial: boolean('is_trial').notNull().default(false),
+    /** Covered by a Family Care monthly GP credit rather than a one-off payment. */
+    isSubscriptionCredit: boolean('is_subscription_credit').notNull().default(false),
+    subscriptionId: id('subscription_id').references(() => familySubscriptions.id, { onDelete: 'set null' }),
     isPaid: boolean('is_paid').notNull().default(false),
     paidAt: timestamp('paid_at'),
     /** Unpaid bookings block the doctor's slot until this instant (extended on payment start). */

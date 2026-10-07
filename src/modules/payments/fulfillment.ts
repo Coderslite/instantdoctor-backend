@@ -17,6 +17,7 @@ import { sendPush } from '../../integrations/push.js';
 import { notFound } from '../../lib/errors.js';
 import { realtime } from '../../realtime/gateway.js';
 import { doctorPushTokens } from '../doctors/doctors.service.js';
+import { activateFamilySubscription } from '../subscriptions/subscriptions.service.js';
 import { createNotification } from '../notifications/notifications.service.js';
 import { doctorEarning, pharmacySplit, referralCommission } from '../pricing/fees.js';
 import { creditReferralBalance, credit } from '../wallet/wallet.ledger.js';
@@ -26,6 +27,11 @@ export interface FulfillmentResult {
   effects: Effect[];
   /** True when the target was already fulfilled (e.g. paid twice): needs a refund review. */
   duplicate: boolean;
+}
+
+export async function confirmFamilySubscription(tx: Tx, userId: string): Promise<FulfillmentResult> {
+  await activateFamilySubscription(tx, userId);
+  return { effects: [], duplicate: false };
 }
 
 const fmt = (d: Date) =>
@@ -58,7 +64,11 @@ export async function confirmAppointment(
       isPaid: true,
       paidAt: appointment.paidAt ?? now,
       currency: opts.currency ?? appointment.currency,
-      doctorEarning: appointment.isTrial ? 0 : doctorEarning(appointment.price),
+      doctorEarning: appointment.isTrial
+        ? 0
+        : appointment.isSubscriptionCredit
+          ? appointment.doctorEarning
+          : doctorEarning(appointment.price),
     })
     .where(eq(appointments.id, appointmentId));
   await tx.update(users).set({ hasPaid: true }).where(eq(users.id, appointment.userId));

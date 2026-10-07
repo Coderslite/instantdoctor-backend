@@ -7,6 +7,7 @@ export const createAppointmentSchema = z
     /** Omit to create an open request that any doctor can accept (ignored for trials). */
     doctorId: z.string().min(1).max(36).optional(),
     packageId: z.string().min(1).max(36).optional(),
+    useFamilyCredit: z.boolean().default(false),
     isTrial: z.boolean().default(false),
     startTime: isoDateTime(),
     complaint: z.string().trim().max(5000).default(''),

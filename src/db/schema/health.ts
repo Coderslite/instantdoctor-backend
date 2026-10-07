@@ -11,6 +11,7 @@ import {
   varchar,
 } from 'drizzle-orm/mysql-core';
 import { createdAt, id, money, timestamp, updatedAt } from '../columns.js';
+import { familyProfiles } from './family.js';
 import { users } from './users.js';
 
 export const LAB_RESULT_STATUSES = ['awaiting_payment', 'pending', 'completed'] as const;
@@ -64,6 +65,8 @@ export const medications = mysqlTable(
     userId: id('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    /** Family member this belongs to; null = the account owner. */
+    profileId: id('profile_id').references(() => familyProfiles.id, { onDelete: 'cascade' }),
     name: varchar('name', { length: 255 }).notNull(),
     prescription: text('prescription'),
     startTime: timestamp('start_time').notNull(),
@@ -75,7 +78,7 @@ export const medications = mysqlTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index('medications_user_idx').on(t.userId)],
+  (t) => [index('medications_user_idx').on(t.userId), index('medications_profile_idx').on(t.profileId)],
 );
 
 export const DOSE_STATUSES = ['taken', 'missed'] as const;
@@ -100,4 +103,49 @@ export const medicationDoses = mysqlTable(
     recordedAt: createdAt(),
   },
   (t) => [uniqueIndex('medication_doses_slot_uq').on(t.medicationId, t.doseDate, t.doseTime)],
+);
+
+/** A patient-owned, clinician-guided plan for a long-term condition. */
+export const CARE_PLAN_KINDS = ['hypertension', 'diabetes', 'general'] as const;
+export type CarePlanKind = (typeof CARE_PLAN_KINDS)[number];
+
+export const carePlans = mysqlTable(
+  'care_plans',
+  {
+    id: id('id').primaryKey(),
+    userId: id('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** Family member this belongs to; null = the account owner. */
+    profileId: id('profile_id').references(() => familyProfiles.id, { onDelete: 'cascade' }),
+    kind: mysqlEnum('kind', CARE_PLAN_KINDS).notNull(),
+    name: varchar('name', { length: 120 }).notNull(),
+    notes: text('notes'),
+    nextReviewAt: timestamp('next_review_at'),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index('care_plans_user_active_idx').on(t.userId, t.isActive),
+    index('care_plans_profile_idx').on(t.profileId),
+  ],
+);
+
+/** Patient-entered measurements. Values are never interpreted or diagnosed by the API. */
+export const vitalReadings = mysqlTable(
+  'vital_readings',
+  {
+    id: id('id').primaryKey(),
+    carePlanId: id('care_plan_id')
+      .notNull()
+      .references(() => carePlans.id, { onDelete: 'cascade' }),
+    systolic: int('systolic'),
+    diastolic: int('diastolic'),
+    glucose: int('glucose'),
+    measuredAt: timestamp('measured_at').notNull(),
+    note: varchar('note', { length: 500 }),
+    createdAt: createdAt(),
+  },
+  (t) => [index('vital_readings_plan_measured_idx').on(t.carePlanId, t.measuredAt)],
 );

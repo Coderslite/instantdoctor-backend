@@ -13,7 +13,8 @@ const TABLES = [
   'idempotency_keys', 'files', 'payment_webhook_events', 'payments', 'wallet_transactions', 'notifications',
   'referrals', 'reviews', 'prescriptions', 'appointment_messages', 'report_messages', 'reports',
   'appointments', 'appointment_packages', 'order_items', 'orders', 'order_checkouts', 'products',
-  'pharmacies', 'lab_result_files', 'lab_results', 'service_charges', 'app_settings',
+  'pharmacies', 'lab_result_files', 'lab_results', 'care_summary_shares', 'vital_readings', 'care_plans',
+  'medication_doses', 'medications', 'family_profiles', 'service_charges', 'app_settings',
   'doctor_profiles', 'payout_accounts', 'user_medical_profiles', 'refresh_tokens', 'portal_sessions', 'admins', 'password_reset_tokens', 'otp_codes', 'auth_identities', 'users',
 ];
 

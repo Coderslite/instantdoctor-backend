@@ -14,6 +14,8 @@ import { listDoctorsQuery } from '../modules/doctors/doctors.schemas.js';
 import { listTipsQuery } from '../modules/health-tips/health-tips.schemas.js';
 import { createLabResultSchema } from '../modules/lab-results/lab-results.schemas.js';
 import * as medications from '../modules/medications/medications.schemas.js';
+import * as carePlans from '../modules/care-plans/care-plans.schemas.js';
+import * as family from '../modules/family/family.schemas.js';
 import { initializePaymentSchema } from '../modules/payments/payments.service.js';
 import * as pharmacy from '../modules/pharmacy/pharmacy.schemas.js';
 import { listReferralsQuery } from '../modules/referrals/referrals.schemas.js';
@@ -774,6 +776,7 @@ op('delete', '/lab-results/:id', {
 op('get', '/medications', {
   tag: 'Health',
   summary: 'My medication schedules with dose history',
+  query: family.profileQuerySchema,
   ok: { 200: c.ItemsOf(c.Medication, 'Medication') },
 });
 op('post', '/medications', {
@@ -807,6 +810,117 @@ op('put', '/medications/:id/doses', {
   params: idParam,
   body: medications.doseSchema,
   ok: { 200: c.Medication },
+});
+
+op('get', '/care-plans', {
+  tag: 'Health',
+  summary: 'Care plans for me or a family member',
+  query: family.profileQuerySchema,
+  ok: { 200: c.ItemsOf(c.CarePlan, 'CarePlan') },
+});
+op('post', '/care-plans', {
+  tag: 'Health',
+  summary: 'Create a care plan',
+  body: carePlans.carePlanSchema,
+  ok: { 201: c.CarePlan },
+});
+op('get', '/care-plans/:id', {
+  tag: 'Health',
+  summary: 'Care plan with recent readings',
+  params: idParam,
+  ok: { 200: c.CarePlan.extend({ readings: z.array(c.VitalReading) }) },
+});
+op('patch', '/care-plans/:id', {
+  tag: 'Health',
+  summary: 'Update a care plan',
+  params: idParam,
+  body: carePlans.updateCarePlanSchema,
+  ok: { 200: c.CarePlan.extend({ readings: z.array(c.VitalReading) }) },
+});
+op('post', '/care-plans/:id/readings', {
+  tag: 'Health',
+  summary: 'Record a blood pressure or glucose reading',
+  params: idParam,
+  body: carePlans.vitalReadingSchema,
+  ok: { 201: c.CarePlan.extend({ readings: z.array(c.VitalReading) }) },
+});
+
+// ─── Family care ─────────────────────────────────────────────────────────────
+
+const shareIdParam = z.object({ id: z.string() });
+const tokenParam = z.object({ token: z.string().meta({ description: 'Share token from the link' }) });
+
+op('get', '/family-profiles', {
+  tag: 'Family',
+  summary: 'People I manage care for',
+  ok: { 200: c.ItemsOf(c.FamilyProfile, 'FamilyProfile') },
+});
+op('post', '/family-profiles', {
+  tag: 'Family',
+  summary: 'Add a family member',
+  body: family.familyProfileSchema,
+  ok: { 201: c.FamilyProfile },
+  errors: { 409: 'FAMILY_LIMIT_REACHED — too many family members on this account' },
+});
+op('get', '/family-profiles/:id', {
+  tag: 'Family',
+  summary: 'A family member',
+  params: idParam,
+  ok: { 200: c.FamilyProfile },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('patch', '/family-profiles/:id', {
+  tag: 'Family',
+  summary: 'Update a family member',
+  params: idParam,
+  body: family.updateFamilyProfileSchema,
+  ok: { 200: c.FamilyProfile },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('delete', '/family-profiles/:id', {
+  tag: 'Family',
+  summary: 'Remove a family member',
+  description: 'Also deletes their care plans, medications and share links.',
+  params: idParam,
+  ok: { 204: null },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('get', '/care-summary', {
+  tag: 'Family',
+  summary: 'Preview the doctor visit summary for me or a family member',
+  query: family.profileQuerySchema,
+  ok: { 200: c.CareSummary },
+});
+op('get', '/care-summary/shares', {
+  tag: 'Family',
+  summary: 'Active share links',
+  query: family.profileQuerySchema,
+  ok: { 200: c.ItemsOf(c.CareSummaryShare, 'CareSummaryShare') },
+});
+op('post', '/care-summary/shares', {
+  tag: 'Family',
+  summary: 'Create a read-only share link',
+  description: 'The returned `url` contains the token and is shown only once. Links expire and can be revoked.',
+  body: family.createShareSchema,
+  ok: { 201: c.CareSummaryShare.extend({ url: z.string() }) },
+});
+op('delete', '/care-summary/shares/:id', {
+  tag: 'Family',
+  summary: 'Revoke a share link',
+  params: shareIdParam,
+  ok: { 204: null },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('get', '/care-summaries/:token', {
+  tag: 'Family',
+  summary: 'View a shared care summary',
+  description: 'Public. Browsers (`Accept: text/html`) get a print-friendly page; API clients get JSON.',
+  auth: false,
+  params: tokenParam,
+  ok: {
+    200: z.object({ summary: c.CareSummary, sharedBy: z.string().nullable(), expiresAt: z.iso.datetime() }),
+  },
+  errors: { 404: 'NOT_FOUND — unknown, expired or revoked link' },
 });
 
 // ─── Content ─────────────────────────────────────────────────────────────────
@@ -1286,6 +1400,7 @@ export function buildOpenApiDocument(serverUrl: string) {
       { name: 'Wallet', description: 'Wallet, transfers and referrals' },
       { name: 'Pharmacy', description: 'Pharmacies, products and orders' },
       { name: 'Health', description: 'Lab results and medication tracking' },
+      { name: 'Family', description: 'Family profiles and shareable care summaries' },
       { name: 'Content', description: 'Health tips and anonymous questions' },
       { name: 'Notifications' },
       {

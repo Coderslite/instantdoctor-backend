@@ -592,6 +592,7 @@ const clock = z.object({ hour: z.number().int(), minute: z.number().int() });
 export const Medication = z
   .object({
     id,
+    profileId: id.nullable().meta({ description: 'Family member; null = account owner.' }),
     name: z.string(),
     prescription: z.string().nullable(),
     startTime: dateTime,
@@ -616,6 +617,114 @@ export const Medication = z
     createdAt: dateTime,
   })
   .meta({ id: 'Medication' });
+
+export const CarePlan = z
+  .object({
+    id,
+    profileId: id.nullable().meta({ description: 'Family member; null = account owner.' }),
+    kind: z.enum(['hypertension', 'diabetes', 'general']),
+    name: z.string(),
+    notes: z.string().nullable(),
+    nextReviewAt: nullableDateTime,
+    isActive: z.boolean(),
+    createdAt: dateTime,
+    updatedAt: dateTime,
+  })
+  .meta({ id: 'CarePlan' });
+
+export const VitalReading = z
+  .object({
+    id,
+    carePlanId: id,
+    systolic: z.number().int().nullable(),
+    diastolic: z.number().int().nullable(),
+    glucose: z.number().int().nullable(),
+    measuredAt: dateTime,
+    note: z.string().nullable(),
+    createdAt: dateTime,
+  })
+  .meta({ id: 'VitalReading' });
+
+// ─── Family care ─────────────────────────────────────────────────────────────
+
+export const FamilyProfile = z
+  .object({
+    id,
+    name: z.string(),
+    relationship: z.enum(['spouse', 'child', 'parent', 'sibling', 'grandparent', 'other']),
+    dateOfBirth: z.iso.date().nullable(),
+    sex: z.enum(['male', 'female']).nullable(),
+    bloodGroup: z.string().nullable(),
+    genotype: z.string().nullable(),
+    allergies: z.string().nullable(),
+    conditions: z.string().nullable(),
+    caregiverReminders: z.boolean(),
+    createdAt: dateTime,
+    updatedAt: dateTime,
+  })
+  .meta({ id: 'FamilyProfile' });
+
+export const CareSummary = z
+  .object({
+    person: z.object({
+      name: z.string(),
+      relationship: z.string().meta({ description: '`self` for the account owner.' }),
+      age: z.number().int().nullable(),
+      sex: z.string().nullable(),
+      bloodGroup: z.string().nullable(),
+      genotype: z.string().nullable(),
+      allergies: z.string().nullable(),
+      conditions: z.string().nullable(),
+    }),
+    medications: z.array(
+      z.object({
+        name: z.string(),
+        instructions: z.string().nullable(),
+        times: z.array(z.string()),
+        until: dateTime,
+      }),
+    ),
+    carePlans: z.array(
+      z.object({
+        name: z.string(),
+        kind: z.enum(['hypertension', 'diabetes', 'general']),
+        notes: z.string().nullable(),
+        nextReviewAt: nullableDateTime,
+        last30Days: z.object({
+          count: z.number().int(),
+          averageSystolic: z.number().int().nullable(),
+          averageDiastolic: z.number().int().nullable(),
+          averageGlucose: z.number().int().nullable(),
+        }),
+        recentReadings: z.array(
+          z.object({
+            systolic: z.number().int().nullable(),
+            diastolic: z.number().int().nullable(),
+            glucose: z.number().int().nullable(),
+            measuredAt: dateTime,
+            context: z.string().nullable(),
+            note: z.string().nullable(),
+          }),
+        ),
+      }),
+    ),
+    labResults: z.array(
+      z.object({ testName: z.string().nullable(), resultDate: dateTime, interpretation: z.string().nullable() }),
+    ),
+    generatedAt: dateTime,
+  })
+  .meta({ id: 'CareSummary' });
+
+export const CareSummaryShare = z
+  .object({
+    id,
+    profileId: id.nullable(),
+    expiresAt: dateTime,
+    viewCount: z.number().int(),
+    lastViewedAt: nullableDateTime,
+    createdAt: dateTime,
+  })
+  .meta({ id: 'CareSummaryShare' });
 
 // ─── Content & misc ──────────────────────────────────────────────────────────
 

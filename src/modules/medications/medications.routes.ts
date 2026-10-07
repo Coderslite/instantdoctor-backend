@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { parse } from '../../lib/validation.js';
 import { authenticate, currentUser } from '../../middleware/authenticate.js';
+import { profileQuerySchema } from '../family/family.schemas.js';
+import { resolveProfileId } from '../family/family.service.js';
 import * as schemas from './medications.schemas.js';
 import * as service from './medications.service.js';
 
@@ -8,7 +10,9 @@ export const medicationsRouter = Router();
 medicationsRouter.use(authenticate);
 
 medicationsRouter.get('/', async (req, res) => {
-  res.json({ items: await service.listMedications(currentUser(req).userId) });
+  const { profileId } = parse(profileQuerySchema, req.query);
+  const userId = currentUser(req).userId;
+  res.json({ items: await service.listMedications(userId, await resolveProfileId(userId, profileId)) });
 });
 
 medicationsRouter.post('/', async (req, res) => {

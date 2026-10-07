@@ -27,11 +27,13 @@ import { realtime } from '../../realtime/gateway.js';
 import { reserveSlotForPayment } from '../appointments/appointments.service.js';
 import { orderSurcharge } from '../pricing/fees.js';
 import { WALLET_CURRENCY } from '../wallet/wallet.ledger.js';
+import { familySubscriptionPrice, requireFamilySubscription } from '../subscriptions/subscriptions.service.js';
 import { runEffects, type Effect } from './effects.js';
 import {
   confirmAppointment,
   confirmCheckout,
   confirmLabResult,
+  confirmFamilySubscription,
   confirmWalletTopUp,
   type FulfillmentResult,
 } from './fulfillment.js';
@@ -60,6 +62,12 @@ export const initializePaymentSchema = z.discriminatedUnion('purpose', [
   z.object({
     purpose: z.literal('wallet_topup'),
     amount: z.number().min(100).max(5_000_000),
+    provider: z.enum(PAYMENT_PROVIDERS),
+    method: z.enum(PAYMENT_METHODS).default('card'),
+  }),
+  z.object({
+    purpose: z.literal('family_subscription'),
+    referenceId: z.string().min(1).max(36),
     provider: z.enum(PAYMENT_PROVIDERS),
     method: z.enum(PAYMENT_METHODS).default('card'),
   }),
@@ -185,6 +193,17 @@ async function resolvePayable(userId: string, input: InitializePaymentInput): Pr
         currency: WALLET_CURRENCY,
         description: 'Wallet top-up',
       };
+    case 'family_subscription': {
+      await requireFamilySubscription(userId, input.referenceId);
+      const price = await familySubscriptionPrice(userId);
+      return {
+        purposeRefId: input.referenceId,
+        baseAmount: price.amount,
+        surcharge: 0,
+        currency: price.currency,
+        description: 'Family Care monthly membership',
+      };
+    }
   }
 }
 
@@ -457,6 +476,9 @@ export async function settle(paymentId: string, result: VerifyResult): Promise<P
         break;
       case 'wallet_topup':
         outcome = await confirmWalletTopUp(tx, payment);
+        break;
+      case 'family_subscription':
+        outcome = await confirmFamilySubscription(tx, payment.userId);
         break;
     }
     effects = outcome.effects;
