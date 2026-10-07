@@ -205,7 +205,7 @@ export async function analytics(query: AnalyticsQuery) {
   const [totals, previous, daily, topPosts, countries, regions, cities, sources, devices] = await Promise.all([
     totalsFor(inRange),
     totalsFor(and(gte(blogPostViews.createdAt, prevFrom), lt(blogPostViews.createdAt, from), postFilter)),
-    db.select({ date: localDay, views, visitors }).from(blogPostViews).where(inRange).groupBy(localDay).orderBy(localDay),
+    db.select({ date: localDay, views, visitors }).from(blogPostViews).where(inRange).groupBy(sql`1`).orderBy(sql`1`),
     db
       .select({ id: healthTips.id, title: healthTips.title, slug: healthTips.slug, views, visitors, avgSeconds, readRate })
       .from(blogPostViews)
