@@ -9,6 +9,9 @@ import { AFRICAN_COUNTRIES } from '../pricing/pricing.service.js';
 export const FAMILY_CARE_MONTHLY_NGN = 5000;
 export const FAMILY_CARE_MONTHLY_USD = 10;
 export const FAMILY_CARE_CREDITS_PER_MONTH = 1;
+/** 60% of the membership fee is reserved for the clinician's GP visit. */
+export const FAMILY_CARE_GP_EARNING_NGN = 3000;
+export const FAMILY_CARE_GP_EARNING_USD = 6;
 const TRIAL_DAYS = 7;
 
 const endsInDays = (days: number) => new Date(Date.now() + days * 24 * 60 * 60 * 1000);
@@ -46,6 +49,10 @@ export async function familySubscriptionPrice(userId: string) {
     amount: african ? FAMILY_CARE_MONTHLY_NGN : FAMILY_CARE_MONTHLY_USD,
     currency: african ? 'NGN' : 'USD',
   };
+}
+
+export function familyCreditDoctorEarning(african: boolean) {
+  return african ? FAMILY_CARE_GP_EARNING_NGN : FAMILY_CARE_GP_EARNING_USD;
 }
 
 export async function getFamilySubscription(userId: string) {
@@ -104,8 +111,26 @@ export async function activateFamilySubscription(tx: Tx, userId: string) {
     await tx.insert(familySubscriptions).values({ id, userId, status: 'active', trialStartedAt: now, trialEndsAt: now, currentPeriodStart: now, currentPeriodEnd: endsInMonth(), consultationCreditsUsed: 0 });
     return id;
   }
-  const base = sub.currentPeriodEnd && sub.currentPeriodEnd > now ? sub.currentPeriodEnd : now;
-  const periodEnd = new Date(base.getTime() + 30 * 24 * 60 * 60 * 1000);
-  await tx.update(familySubscriptions).set({ status: 'active', currentPeriodStart: now, currentPeriodEnd: periodEnd, consultationCreditsUsed: 0 }).where(eq(familySubscriptions.id, sub.id));
+  // A member who renews early should not receive a second credit in the
+  // current month. Extend the end date and reset credits only for a new cycle.
+  if (sub.status === 'active' && sub.currentPeriodEnd && sub.currentPeriodEnd > now) {
+    const extendedPeriodEnd = new Date(
+      sub.currentPeriodEnd.getTime() + 30 * 24 * 60 * 60 * 1000,
+    );
+    await tx
+      .update(familySubscriptions)
+      .set({ currentPeriodEnd: extendedPeriodEnd })
+      .where(eq(familySubscriptions.id, sub.id));
+    return sub.id;
+  }
+  await tx
+    .update(familySubscriptions)
+    .set({
+      status: 'active',
+      currentPeriodStart: now,
+      currentPeriodEnd: endsInMonth(),
+      consultationCreditsUsed: 0,
+    })
+    .where(eq(familySubscriptions.id, sub.id));
   return sub.id;
 }

@@ -543,6 +543,26 @@ op('get', '/appointments/:id/prescriptions', {
   params: idParam,
   ok: { 200: c.ItemsOf(c.Prescription, 'Prescription') },
 });
+op('post', '/appointments/:id/prescriptions', {
+  tag: 'Clinical',
+  summary: 'Issue a prescription after a completed appointment (doctor only)',
+  params: idParam,
+  body: z.object({ prescription: z.string().min(1).max(5000) }),
+  ok: { 201: c.Prescription },
+});
+op('patch', '/appointments/:id/prescriptions/:prescriptionId', {
+  tag: 'Clinical',
+  summary: 'Correct a prescription (issuing doctor only)',
+  params: z.object({ id: z.string(), prescriptionId: z.string() }),
+  body: z.object({ prescription: z.string().min(1).max(5000) }),
+  ok: { 200: c.Prescription },
+});
+op('delete', '/appointments/:id/prescriptions/:prescriptionId', {
+  tag: 'Clinical',
+  summary: 'Delete a prescription (issuing doctor only)',
+  params: z.object({ id: z.string(), prescriptionId: z.string() }),
+  ok: { 204: null },
+});
 op('post', '/prescriptions/:id/seen', {
   tag: 'Clinical',
   summary: 'Mark a prescription as seen',
@@ -854,6 +874,25 @@ op('get', '/family-profiles', {
   tag: 'Family',
   summary: 'People I manage care for',
   ok: { 200: c.ItemsOf(c.FamilyProfile, 'FamilyProfile') },
+});
+op('get', '/family-profiles/overview', {
+  tag: 'Family',
+  summary: 'Whole-household dashboard data',
+  description:
+    'The account owner (`profile: null`) and every family member, each with medications (incl. dose history) and active care plans with up to 30 readings from the last 30 days.',
+  ok: {
+    200: z.object({
+      people: z.array(
+        z.object({
+          profile: c.FamilyProfile.nullable(),
+          name: z.string(),
+          medications: z.array(c.Medication),
+          carePlans: z.array(c.CarePlan.extend({ readings: z.array(c.VitalReading) })),
+        }),
+      ),
+      generatedAt: z.iso.datetime(),
+    }),
+  },
 });
 op('post', '/family-profiles', {
   tag: 'Family',

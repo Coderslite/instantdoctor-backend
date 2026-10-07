@@ -696,6 +696,15 @@ export const CareSummary = z
           averageDiastolic: z.number().int().nullable(),
           averageGlucose: z.number().int().nullable(),
         }),
+        trend: z.array(
+          z.object({
+            systolic: z.number().int().nullable(),
+            diastolic: z.number().int().nullable(),
+            glucose: z.number().int().nullable(),
+            measuredAt: dateTime,
+            context: z.string().nullable(),
+          }),
+        ),
         recentReadings: z.array(
           z.object({
             systolic: z.number().int().nullable(),

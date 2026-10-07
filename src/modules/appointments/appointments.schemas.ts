@@ -25,6 +25,10 @@ export const listAppointmentsQuery = z.object({
 
 export const doctorStatusSchema = z.object({ status: z.enum(['completed', 'cancelled']) });
 
+export const createPrescriptionSchema = z.object({
+  prescription: z.string().trim().min(1).max(5000),
+});
+
 export const listMessagesQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   /** Cursor: return messages created strictly before this instant. */

@@ -17,11 +17,10 @@ import { realtime } from '../../realtime/gateway.js';
 import { emailAppointmentUpdate } from './appointment-emails.js';
 import { runEffects, type Effect } from '../payments/effects.js';
 import { confirmAppointment } from '../payments/fulfillment.js';
-import { quoteFromUsd, resolveRegion } from '../pricing/pricing.service.js';
+import { AFRICAN_COUNTRIES, quoteFromUsd, resolveRegion } from '../pricing/pricing.service.js';
 import { getAppSettings, getTrialDoctorId } from '../settings/settings.service.js';
 import { serializeUserSummary } from '../users/users.serializer.js';
-import { requireAvailableFamilyCredit } from '../subscriptions/subscriptions.service.js';
-import { AFRICAN_COUNTRIES } from '../pricing/pricing.service.js';
+import { familyCreditDoctorEarning, requireAvailableFamilyCredit } from '../subscriptions/subscriptions.service.js';
 import type { CreateAppointmentInput } from './appointments.schemas.js';
 
 const TRIAL_DURATION_SECONDS = 30 * 60;
@@ -129,8 +128,7 @@ async function planBooking(userId: string, input: CreateAppointmentInput): Promi
     currency: input.useFamilyCredit ? (african ? 'NGN' : 'USD') : quote.currency,
     priceUsd: input.useFamilyCredit ? 0 : quote.amountUsd,
     useFamilyCredit: input.useFamilyCredit,
-    // One credit is funded from the membership: 60% of ₦5,000/$10.
-    subscriptionCreditEarning: input.useFamilyCredit ? (african ? 3000 : 6) : null,
+    subscriptionCreditEarning: input.useFamilyCredit ? familyCreditDoctorEarning(african) : null,
   };
 }
 

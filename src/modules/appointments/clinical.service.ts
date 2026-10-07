@@ -1,4 +1,4 @@
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { prescriptions, reviews, users } from '../../db/schema/index.js';
 import { mailer } from '../../integrations/mailer.js';
@@ -15,6 +15,66 @@ export async function listPrescriptions(userId: string, appointmentId: string) {
     .from(prescriptions)
     .where(eq(prescriptions.appointmentId, appointmentId))
     .orderBy(desc(prescriptions.createdAt));
+}
+
+/** A prescription may only be issued by the assigned doctor after the visit. */
+export async function createPrescription(
+  doctorId: string,
+  appointmentId: string,
+  input: { prescription: string },
+) {
+  const appointment = await requireParticipant(appointmentId, doctorId);
+  if (appointment.doctorId !== doctorId) throw forbidden('Only the assigned doctor can issue a prescription');
+  if (appointment.status !== 'completed') {
+    throw unprocessable('APPOINTMENT_NOT_COMPLETED', 'Complete the appointment before issuing a prescription');
+  }
+
+  const prescription = {
+    id: newId(),
+    appointmentId,
+    userId: appointment.userId,
+    doctorId,
+    prescription: input.prescription,
+    seen: false,
+    createdAt: new Date(),
+  };
+  await db.insert(prescriptions).values(prescription);
+  return prescription;
+}
+
+async function requireEditablePrescription(
+  doctorId: string,
+  appointmentId: string,
+  prescriptionId: string,
+) {
+  const appointment = await requireParticipant(appointmentId, doctorId);
+  if (appointment.doctorId !== doctorId) throw forbidden('Only the assigned doctor can change a prescription');
+  if (appointment.status !== 'completed') {
+    throw unprocessable('APPOINTMENT_NOT_COMPLETED', 'Complete the appointment before changing a prescription');
+  }
+  const [prescription] = await db
+    .select()
+    .from(prescriptions)
+    .where(and(eq(prescriptions.id, prescriptionId), eq(prescriptions.appointmentId, appointmentId)))
+    .limit(1);
+  if (!prescription || prescription.doctorId !== doctorId) throw notFound('Prescription');
+  return prescription;
+}
+
+export async function updatePrescription(
+  doctorId: string,
+  appointmentId: string,
+  prescriptionId: string,
+  input: { prescription: string },
+) {
+  const existing = await requireEditablePrescription(doctorId, appointmentId, prescriptionId);
+  await db.update(prescriptions).set({ prescription: input.prescription }).where(eq(prescriptions.id, prescriptionId));
+  return { ...existing, prescription: input.prescription };
+}
+
+export async function deletePrescription(doctorId: string, appointmentId: string, prescriptionId: string) {
+  await requireEditablePrescription(doctorId, appointmentId, prescriptionId);
+  await db.delete(prescriptions).where(eq(prescriptions.id, prescriptionId));
 }
 
 export async function markPrescriptionSeen(userId: string, prescriptionId: string) {

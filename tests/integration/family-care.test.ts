@@ -1,10 +1,29 @@
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { closeDatabase, db } from '../../src/db/client.js';
-import { carePlans, careSummaryShares } from '../../src/db/schema/index.js';
+import { carePlans, careSummaryShares, familySubscriptions } from '../../src/db/schema/index.js';
+import { newId } from '../../src/lib/ids.js';
 import { api, auth, createUser, resetDatabase } from '../helpers.js';
 
 afterAll(() => closeDatabase());
+
+/** Family profiles require an active Family Care trial or membership. */
+async function withMembership(userId: string) {
+  await db.insert(familySubscriptions).values({
+    id: newId(),
+    userId,
+    status: 'trialing',
+    trialStartedAt: new Date(),
+    trialEndsAt: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+  });
+}
+
+/** A user with an active Family Care trial. */
+async function member(overrides: Parameters<typeof createUser>[0] = {}) {
+  const user = await createUser(overrides);
+  await withMembership(user.id);
+  return user;
+}
 
 const addProfile = (token: string, body: Record<string, unknown> = {}) =>
   api()
@@ -12,13 +31,13 @@ const addProfile = (token: string, body: Record<string, unknown> = {}) =>
     .set(auth(token))
     .send({ name: 'Mum', relationship: 'parent', dateOfBirth: '1960-04-12', allergies: 'Penicillin', ...body });
 
-const tokenOf = (url: string) => url.split('/care-summaries/')[1]!;
+const tokenOf = (url: string) => url.split('/care/')[1]!;
 
 describe('family profiles', () => {
   beforeEach(() => resetDatabase());
 
   it('creates, lists, updates and deletes a family member', async () => {
-    const user = await createUser();
+    const user = await member();
     const created = await addProfile(user.token);
     expect(created.status).toBe(201);
     expect(created.body).toMatchObject({ name: 'Mum', relationship: 'parent', allergies: 'Penicillin', caregiverReminders: true });
@@ -37,7 +56,7 @@ describe('family profiles', () => {
   });
 
   it('rejects future dates of birth and keeps profiles private to their owner', async () => {
-    const owner = await createUser();
+    const owner = await member();
     const stranger = await createUser();
     expect((await addProfile(owner.token, { dateOfBirth: '2999-01-01' })).status).toBe(400);
 
@@ -47,12 +66,57 @@ describe('family profiles', () => {
     expect((await api().get('/api/v1/family-profiles').set(auth(stranger.token))).body.items).toHaveLength(0);
   });
 
-  it('caps the number of family members', async () => {
+  it('requires a Family Care membership to add someone', async () => {
     const user = await createUser();
-    for (let i = 0; i < 12; i++) expect((await addProfile(user.token, { name: `Kid ${i}`, relationship: 'child' })).status).toBe(201);
+    const res = await addProfile(user.token);
+    expect(res.status).toBe(409);
+    expect(res.body.error?.code ?? res.body.code).toBe('FAMILY_SUBSCRIPTION_REQUIRED');
+  });
+
+  it('caps the number of family members', async () => {
+    const user = await member();
+    for (let i = 0; i < 5; i++) expect((await addProfile(user.token, { name: `Kid ${i}`, relationship: 'child' })).status).toBe(201);
     const over = await addProfile(user.token);
     expect(over.status).toBe(409);
     expect(over.body.error?.code ?? over.body.code).toBe('FAMILY_LIMIT_REACHED');
+  });
+});
+
+describe('family overview', () => {
+  beforeEach(() => resetDatabase());
+
+  it('returns me and every family member with their own meds, plans and readings', async () => {
+    const user = await member({ firstName: 'Ada' });
+    const { body: mum } = await addProfile(user.token);
+    const { body: plan } = await api()
+      .post('/api/v1/care-plans')
+      .set(auth(user.token))
+      .send({ profileId: mum.id, kind: 'hypertension', name: 'Mum BP' });
+    await api().post(`/api/v1/care-plans/${plan.id}/readings`).set(auth(user.token)).send({ systolic: 150, diastolic: 95 });
+    await api()
+      .post('/api/v1/medications')
+      .set(auth(user.token))
+      .send({ name: 'Metformin', startTime: '2026-10-01T00:00:00Z', endTime: '2026-12-01T00:00:00Z', morningTime: '08:00' });
+
+    const res = await api().get('/api/v1/family-profiles/overview').set(auth(user.token));
+    expect(res.status).toBe(200);
+    const [me, her] = res.body.people;
+    expect(me).toMatchObject({ profile: null, name: 'Ada' });
+    expect(me.medications.map((m: { name: string }) => m.name)).toEqual(['Metformin']);
+    expect(me.carePlans).toHaveLength(0);
+    expect(her.profile.id).toBe(mum.id);
+    expect(her.medications).toHaveLength(0);
+    expect(her.carePlans[0]).toMatchObject({ name: 'Mum BP' });
+    expect(her.carePlans[0].readings[0]).toMatchObject({ systolic: 150, diastolic: 95 });
+  });
+
+  it('works without a membership and only includes the caller’s household', async () => {
+    const owner = await member();
+    await addProfile(owner.token);
+    const stranger = await createUser();
+    const res = await api().get('/api/v1/family-profiles/overview').set(auth(stranger.token));
+    expect(res.status).toBe(200);
+    expect(res.body.people).toHaveLength(1);
   });
 });
 
@@ -68,7 +132,7 @@ describe('care plans and medications per person', () => {
   });
 
   it('keeps each person’s plans and medications separate', async () => {
-    const user = await createUser();
+    const user = await member();
     const { body: mum } = await addProfile(user.token);
 
     await api().post('/api/v1/care-plans').set(auth(user.token)).send({ kind: 'diabetes', name: 'My sugar' });
@@ -93,7 +157,7 @@ describe('care plans and medications per person', () => {
   });
 
   it('refuses to attach records to someone else’s family member', async () => {
-    const owner = await createUser();
+    const owner = await member();
     const stranger = await createUser();
     const { body: mum } = await addProfile(owner.token);
 
@@ -107,7 +171,7 @@ describe('care plans and medications per person', () => {
   });
 
   it('removes a family member’s records when they are deleted', async () => {
-    const user = await createUser();
+    const user = await member();
     const { body: mum } = await addProfile(user.token);
     await api().post('/api/v1/care-plans').set(auth(user.token)).send({ profileId: mum.id, kind: 'general', name: 'Mum' });
     await api().delete(`/api/v1/family-profiles/${mum.id}`).set(auth(user.token));
@@ -119,7 +183,7 @@ describe('shareable care summary', () => {
   beforeEach(() => resetDatabase());
 
   async function mumWithReadings() {
-    const user = await createUser({ firstName: 'Ada', lastName: 'Obi' });
+    const user = await member({ firstName: 'Ada', lastName: 'Obi' });
     const { body: mum } = await addProfile(user.token, { allergies: '<script>alert(1)</script> Penicillin' });
     const { body: plan } = await api()
       .post('/api/v1/care-plans')
@@ -141,6 +205,7 @@ describe('shareable care summary', () => {
     expect(res.body.person).toMatchObject({ name: 'Mum', relationship: 'parent' });
     expect(res.body.carePlans[0].last30Days).toMatchObject({ count: 2, averageSystolic: 145, averageDiastolic: 93 });
     expect(res.body.carePlans[0].recentReadings[0]).toMatchObject({ context: 'Resting', note: 'after walk' });
+    expect(res.body.carePlans[0].trend.at(-1)).toMatchObject({ context: 'Resting' });
   });
 
   it('shares a read-only, escaped page and stops working once revoked', async () => {

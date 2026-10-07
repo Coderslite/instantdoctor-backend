@@ -97,6 +97,21 @@ appointmentsRouter.get('/:id/prescriptions', async (req, res) => {
   res.json({ items: await clinical.listPrescriptions(currentUser(req).userId, req.params.id) });
 });
 
+appointmentsRouter.post<{ id: string }>('/:id/prescriptions', requireRole('doctor'), async (req, res) => {
+  const input = parse(schemas.createPrescriptionSchema, req.body);
+  res.status(201).json(await clinical.createPrescription(currentUser(req).userId, req.params.id, input));
+});
+
+appointmentsRouter.patch<{ id: string; prescriptionId: string }>('/:id/prescriptions/:prescriptionId', requireRole('doctor'), async (req, res) => {
+  const input = parse(schemas.createPrescriptionSchema, req.body);
+  res.json(await clinical.updatePrescription(currentUser(req).userId, req.params.id, req.params.prescriptionId, input));
+});
+
+appointmentsRouter.delete<{ id: string; prescriptionId: string }>('/:id/prescriptions/:prescriptionId', requireRole('doctor'), async (req, res) => {
+  await clinical.deletePrescription(currentUser(req).userId, req.params.id, req.params.prescriptionId);
+  res.status(204).end();
+});
+
 appointmentsRouter.get('/:id/review', async (req, res) => {
   res.json({ review: await clinical.getReview(currentUser(req).userId, req.params.id) });
 });

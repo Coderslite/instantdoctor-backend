@@ -48,6 +48,9 @@ function ageFrom(dob: Date | string | null) {
   return age >= 0 ? age : null;
 }
 
+/** Most recent readings per plan included in the chart series. */
+const TREND_POINTS = 120;
+
 const toHhmm = (t: string | null) => (t ? t.slice(0, 5) : null);
 const avg = (values: (number | null)[]) => {
   const v = values.filter((x): x is number => x !== null);
@@ -153,6 +156,17 @@ export async function buildCareSummary(ownerUserId: string, profileId: string | 
           averageDiastolic: avg(own.map((r) => r.diastolic)),
           averageGlucose: avg(own.map((r) => r.glucose)),
         },
+        /** Oldest first, for charting the 30-day trend. */
+        trend: own
+          .slice(0, TREND_POINTS)
+          .reverse()
+          .map((r) => ({
+            systolic: r.systolic,
+            diastolic: r.diastolic,
+            glucose: r.glucose,
+            measuredAt: r.measuredAt,
+            context: splitNote(r.note).context,
+          })),
         recentReadings: own.slice(0, 5).map((r) => ({
           systolic: r.systolic,
           diastolic: r.diastolic,
@@ -180,7 +194,12 @@ const serializeShare = (s: typeof careSummaryShares.$inferSelect) => ({
   createdAt: s.createdAt,
 });
 
-export const shareUrl = (token: string) => `${env.PUBLIC_BASE_URL}/api/v1/care-summaries/${token}`;
+/**
+ * Links open the branded page on the website (instantdoctor_web `/care/[token]`),
+ * which reads `GET /api/v1/care-summaries/:token`. That endpoint still serves
+ * its own HTML page, so links issued before this change keep working.
+ */
+export const shareUrl = (token: string) => `${env.WEBSITE_URL}/care/${token}`;
 
 /** Creates a short-lived, read-only link. The raw token is returned once only. */
 export async function createShare(ownerUserId: string, input: z.infer<typeof createShareSchema>) {

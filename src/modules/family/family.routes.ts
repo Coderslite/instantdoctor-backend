@@ -11,6 +11,11 @@ familyRouter.get('/', async (req, res) => {
   res.json({ items: await service.listProfiles(currentUser(req).userId) });
 });
 
+// Declared before '/:id' so "overview" isn't read as a profile id.
+familyRouter.get('/overview', async (req, res) => {
+  res.json(await service.familyOverview(currentUser(req).userId));
+});
+
 familyRouter.post('/', async (req, res) => {
   const input = parse(schemas.familyProfileSchema, req.body);
   res.status(201).json(await service.createProfile(currentUser(req).userId, input));
