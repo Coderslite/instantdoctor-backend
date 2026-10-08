@@ -1,0 +1,4 @@
+apii.instantdoctor.co {
+    encode gzip
+    reverse_proxy api:4000
+}
