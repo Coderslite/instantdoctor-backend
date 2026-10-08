@@ -1,5 +1,6 @@
 import type { UserRecord } from 'firebase-admin/auth';
 import type * as s from '../../src/db/schema/index.js';
+import { DEFAULT_APPOINTMENT_PACKAGE_FEATURES } from '../../src/db/schema/index.js';
 import { hashPassword } from '../../src/lib/crypto.js';
 import { newId } from '../../src/lib/ids.js';
 import { bool, clock, int, num, plain, str, toDate, toGeo, validId } from './normalize.js';
@@ -331,6 +332,7 @@ export function transformPackages(docs: SourceDoc[], refs: Refs, report: Migrati
       listAmountUsd: num(d.dollarAmount),
       durationSeconds: int(d.duration) ?? 86_400,
       description: str(d.description),
+      features: DEFAULT_APPOINTMENT_PACKAGE_FEATURES,
     });
     refs.packages.set(id, { name, type });
   }

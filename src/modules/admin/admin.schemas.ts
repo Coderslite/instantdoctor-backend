@@ -22,10 +22,21 @@ export const createAppointmentSchema = z.object({
   startTime: z.coerce.date(), endTime: z.coerce.date(), timeZone: z.string().trim().max(64).nullable().optional(),
   price: z.coerce.number().nonnegative(), currency: z.string().trim().length(3).toUpperCase(), isTrial: z.boolean().default(false), isPaid: z.boolean().default(false),
 });
+const packageFeaturesSchema = z.object({
+  allowVideoCall: z.boolean().default(false),
+  allowVoiceCall: z.boolean().default(false),
+  allowChat: z.boolean().default(true),
+  allowPrescription: z.boolean().default(true),
+  allowFamilyCredit: z.boolean().default(false),
+  followUpDays: z.coerce.number().int().min(0).max(90).default(0),
+  included: z.array(z.string().trim().min(1).max(100)).max(12).default([]),
+});
 export const appointmentPackageSchema = z.object({
   name: z.string().trim().min(1).max(128), type: z.enum(['basic', 'standard', 'special']), amountUsd: z.coerce.number().positive(),
   listAmountUsd: z.coerce.number().positive().nullable().optional(), durationMinutes: z.coerce.number().int().min(5).max(1440),
-  description: z.string().trim().max(5000).nullable().optional(), isActive: z.boolean().default(true),
+  description: z.string().trim().max(5000).nullable().optional(), features: packageFeaturesSchema,
+  sortOrder: z.coerce.number().int().min(0).max(10_000).default(0), isRecommended: z.boolean().default(false),
+  badge: z.string().trim().min(1).max(64).nullable().optional(), isActive: z.boolean().default(true),
 });
 export const updateAppointmentPackageSchema = appointmentPackageSchema.partial().refine((value) => Object.keys(value).length > 0, 'At least one field is required');
 export const pharmacySchema = z.object({ name: z.string().trim().min(1).max(255), email: z.email(), password: z.string().min(8).max(128), phoneNumber: z.string().trim().max(32).nullable().optional(), address: z.string().trim().max(512).nullable().optional(), latitude: z.coerce.number().min(-90).max(90).nullable().optional(), longitude: z.coerce.number().min(-180).max(180).nullable().optional(), deliveryFeePerKm: z.coerce.number().nonnegative().default(0), discount: z.coerce.number().int().min(0).max(100).default(0), image: z.url().max(1024).nullable().optional(), status: z.string().trim().min(1).max(32).default('active') });

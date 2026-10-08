@@ -13,7 +13,7 @@ import {
 } from '../../db/schema/index.js';
 import { mailer } from '../../integrations/mailer.js';
 import { emailAppointmentUpdate } from '../appointments/appointment-emails.js';
-import { sendPush } from '../../integrations/push.js';
+import { sendPush, type PushMessage } from '../../integrations/push.js';
 import { notFound } from '../../lib/errors.js';
 import { realtime } from '../../realtime/gateway.js';
 import { doctorPushTokens } from '../doctors/doctors.service.js';
@@ -31,7 +31,26 @@ export interface FulfillmentResult {
 
 export async function confirmFamilySubscription(tx: Tx, userId: string): Promise<FulfillmentResult> {
   await activateFamilySubscription(tx, userId);
-  return { effects: [], duplicate: false };
+  return {
+    effects: [
+      await createNotification({ userId, type: 'transaction', title: 'Your Family Care membership is active' }, tx),
+      await payerPush(tx, userId, {
+        title: 'Payment confirmed',
+        body: 'Your Family Care membership is active.',
+        data: { type: 'transaction' },
+      }),
+    ],
+    duplicate: false,
+  };
+}
+
+/**
+ * A push to whoever paid, so they learn the payment went through even when
+ * the app crashed or was closed during checkout.
+ */
+async function payerPush(tx: Tx, userId: string, message: PushMessage): Promise<Effect> {
+  const [user] = await tx.select({ token: users.fcmToken }).from(users).where(eq(users.id, userId));
+  return () => sendPush([user?.token], message);
 }
 
 const fmt = (d: Date) =>
@@ -101,6 +120,16 @@ export async function confirmAppointment(
       tx,
     ),
   );
+
+  if (!appointment.isTrial && !appointment.isSubscriptionCredit && appointment.price > 0) {
+    effects.push(
+      await payerPush(tx, appointment.userId, {
+        title: 'Payment confirmed',
+        body: `Your consultation on ${fmt(appointment.startTime)} is booked.`,
+        data: { id: appointment.id, type: 'appointment' },
+      }),
+    );
+  }
 
   // Addressed bookings alert their doctor; open requests alert every doctor (first to accept wins).
   const tokens = await doctorPushTokens(tx, appointment.doctorId ?? undefined);
@@ -195,6 +224,11 @@ export async function confirmCheckout(tx: Tx, checkoutId: string): Promise<Fulfi
 
   const effects: Effect[] = [
     await createNotification({ userId: checkout.userId, type: 'transaction', title: 'Your purchase was successful' }, tx),
+    await payerPush(tx, checkout.userId, {
+      title: 'Payment confirmed',
+      body: 'Your order has been sent to the pharmacy.',
+      data: { type: 'transaction' },
+    }),
     () => mailer.activity(checkout.userId, 'Order'),
   ];
 
@@ -239,7 +273,21 @@ export async function confirmLabResult(tx: Tx, labResultId: string): Promise<Ful
   if (!result) throw notFound('Lab result');
   if (result.status !== 'awaiting_payment') return { effects: [], duplicate: true };
   await tx.update(labResults).set({ status: 'pending' }).where(eq(labResults.id, labResultId));
-  return { effects: [() => mailer.activity(result.userId, 'Lab Result')], duplicate: false };
+  return {
+    effects: [
+      await createNotification(
+        { userId: result.userId, type: 'lab_result', title: 'Payment received. A doctor will review your lab result shortly', uniqueId: labResultId },
+        tx,
+      ),
+      await payerPush(tx, result.userId, {
+        title: 'Payment confirmed',
+        body: 'A doctor will review your lab result shortly.',
+        data: { id: labResultId, type: 'lab_result' },
+      }),
+      () => mailer.activity(result.userId, 'Lab Result'),
+    ],
+    duplicate: false,
+  };
 }
 
 // ─── Wallet top-up ───────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import { createApp } from './app.js';
 import { logger } from './lib/logger.js';
 import { purgeExpiredIdempotencyKeys } from './middleware/idempotency.js';
 import { purgeAbandonedUploads } from './modules/files/files.service.js';
+import { reconcilePendingPayments } from './modules/payments/payments.service.js';
 import { closeRealtime, initRealtime } from './realtime/gateway.js';
 
 const app = createApp();
@@ -31,12 +32,27 @@ const housekeeping = setInterval(
 );
 housekeeping.unref();
 
+// Settles payments whose webhook never arrived (see reconcilePendingPayments).
+let reconciling = false;
+const reconcilePayments = () => {
+  if (reconciling) return;
+  reconciling = true;
+  reconcilePendingPayments()
+    .then((s) => (s.succeeded > 0 || s.errors > 0) && logger.info(s, 'Pending payments reconciled'))
+    .catch((err: unknown) => logger.error({ err }, 'Payment reconciliation failed'))
+    .finally(() => (reconciling = false));
+};
+const paymentSweep = setInterval(reconcilePayments, 10 * 60 * 1000);
+paymentSweep.unref();
+setTimeout(reconcilePayments, 60 * 1000).unref();
+
 let shuttingDown = false;
 async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info({ signal }, 'Shutting down');
   clearInterval(housekeeping);
+  clearInterval(paymentSweep);
   const force = setTimeout(() => process.exit(1), 15_000);
   force.unref();
   server.close();

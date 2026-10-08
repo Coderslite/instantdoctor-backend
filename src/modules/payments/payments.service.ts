@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNotNull } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNotNull, lt, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db/client.js';
 import {
@@ -499,6 +499,57 @@ export async function settle(paymentId: string, result: VerifyResult): Promise<P
     () => realtime.toUser(settled.userId, 'payment:updated', { reference: settled.reference, status: settled.status, purpose: settled.purpose }),
   ]);
   return settled;
+}
+
+// ─── Reconciliation ──────────────────────────────────────────────────────────
+
+/** Leave the first minutes to the app's own verify call and the webhook. */
+export const RECONCILE_MIN_AGE_MS = 5 * 60_000;
+/** Checkouts still unpaid after this are abandoned; a late webhook still settles them. */
+export const RECONCILE_WINDOW_MS = 3 * 24 * 60 * 60_000;
+const RECONCILE_BATCH = 50;
+
+/**
+ * Safety net for lost webhooks: asks the provider about recent payments that
+ * are still awaiting money and settles them. This is what marks an appointment
+ * or subscription paid when the app crashed mid-checkout and the webhook never
+ * arrived. Runs on a timer (see server.ts); `settle` locks each row, so
+ * overlapping runs or API instances settle a payment only once.
+ *
+ * Each checked row's `updatedAt` is bumped and rows are taken oldest-checked
+ * first, so a large backlog is worked through in rotation.
+ */
+export async function reconcilePendingPayments(now = new Date()) {
+  const rows = await db
+    .select()
+    .from(payments)
+    .where(
+      and(
+        or(eq(payments.status, 'pending'), and(eq(payments.status, 'cancelled'), eq(payments.method, 'bank_transfer'))),
+        lt(payments.createdAt, new Date(now.getTime() - RECONCILE_MIN_AGE_MS)),
+        gt(payments.createdAt, new Date(now.getTime() - RECONCILE_WINDOW_MS)),
+      ),
+    )
+    .orderBy(asc(payments.updatedAt))
+    .limit(RECONCILE_BATCH);
+
+  /** `succeeded`/`failed`: rows found in that state after the check (an overlapping run may have settled them). */
+  const summary = { checked: 0, succeeded: 0, failed: 0, errors: 0 };
+  for (const payment of rows) {
+    summary.checked++;
+    try {
+      const result = await getPaymentProvider(payment.provider).verify(payment);
+      const settled = await settle(payment.id, result);
+      if (settled.status === 'pending') await expireIfLapsed(settled);
+      if (settled.status === 'succeeded') summary.succeeded++;
+      if (settled.status === 'failed') summary.failed++;
+    } catch (err) {
+      summary.errors++;
+      logger.warn({ err, reference: payment.reference }, 'Payment reconciliation check failed');
+    }
+    await db.update(payments).set({ updatedAt: new Date() }).where(eq(payments.id, payment.id));
+  }
+  return summary;
 }
 
 // ─── Webhooks ────────────────────────────────────────────────────────────────

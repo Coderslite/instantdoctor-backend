@@ -24,9 +24,15 @@ export interface RealtimeEvents {
   'messages:read': { appointmentId: string; readerId: string };
   'payment:updated': { reference: string; status: string; purpose: string };
   'presence:changed': { userId: string; presence: 'online' | 'offline' };
+  'call:invite': Record<string, unknown>;
+  'call:answer': Record<string, unknown>;
+  'call:ice-candidate': Record<string, unknown>;
+  'call:end': Record<string, unknown>;
+  'call:decline': Record<string, unknown>;
 }
 
 let io: Server | null = null;
+const activeCalls = new Map<string, { appointmentId: string; participants: Set<string> }>();
 
 const userRoom = (id: string) => `user:${id}`;
 const appointmentRoom = (id: string) => `appointment:${id}`;
@@ -50,7 +56,9 @@ export function initRealtime(httpServer: HttpServer): Server {
     }
   });
 
-  io.on('connection', (socket) => onConnection(socket).catch((err) => logger.error({ err }, 'Socket error')));
+  io.on('connection', (socket) =>
+    onConnection(socket).catch((err) => logger.error({ err }, 'Socket error')),
+  );
   return io;
 }
 
@@ -59,20 +67,73 @@ async function onConnection(socket: Socket) {
   await socket.join(userRoom(userId));
   await setPresence(userId, 'online');
 
-  socket.on('appointment:join', async (appointmentId: unknown, ack?: (res: { ok: boolean }) => void) => {
-    const ok = typeof appointmentId === 'string' && (await isParticipant(appointmentId, userId));
-    if (ok) await socket.join(appointmentRoom(appointmentId));
-    ack?.({ ok });
-  });
+  socket.on(
+    'appointment:join',
+    async (appointmentId: unknown, ack?: (res: { ok: boolean }) => void) => {
+      const ok = typeof appointmentId === 'string' && (await isParticipant(appointmentId, userId));
+      if (ok) await socket.join(appointmentRoom(appointmentId));
+      ack?.({ ok });
+    },
+  );
 
   socket.on('appointment:leave', (appointmentId: unknown) => {
     if (typeof appointmentId === 'string') void socket.leave(appointmentRoom(appointmentId));
   });
 
+  // WebRTC carries media directly between the two devices. The server only
+  // relays SDP/ICE and verifies every route against the appointment, so a
+  // connected user cannot signal an arbitrary account.
+  socket.on('call:invite', async (raw: unknown) => {
+    const data = callPayload(raw);
+    if (
+      !data ||
+      !(await isParticipant(data.appointmentId, userId)) ||
+      !(await isParticipant(data.appointmentId, data.toUserId))
+    )
+      return;
+    activeCalls.set(data.callId, {
+      appointmentId: data.appointmentId,
+      participants: new Set([userId, data.toUserId]),
+    });
+    io?.to(userRoom(data.toUserId)).emit('call:invite', { ...data, fromUserId: userId });
+  });
+
+  for (const event of ['call:answer', 'call:ice-candidate', 'call:end', 'call:decline'] as const) {
+    socket.on(event, (raw: unknown) => {
+      const data = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+      const callId = data?.callId;
+      if (typeof callId !== 'string') return;
+      const call = activeCalls.get(callId);
+      if (!call || !call.participants.has(userId)) return;
+      const recipient = [...call.participants].find((id) => id !== userId);
+      if (recipient) io?.to(userRoom(recipient)).emit(event, { ...data, fromUserId: userId });
+      if (event === 'call:end' || event === 'call:decline') activeCalls.delete(callId);
+    });
+  }
+
   socket.on('disconnect', async () => {
     const remaining = await io?.in(userRoom(userId)).fetchSockets();
     if (!remaining?.length) await setPresence(userId, 'offline');
   });
+}
+
+function callPayload(raw: unknown) {
+  if (!raw || typeof raw !== 'object') return null;
+  const data = raw as Record<string, unknown>;
+  const callId = data.callId,
+    appointmentId = data.appointmentId,
+    toUserId = data.toUserId;
+  if (
+    typeof callId !== 'string' ||
+    typeof appointmentId !== 'string' ||
+    typeof toUserId !== 'string'
+  )
+    return null;
+  return data as Record<string, unknown> & {
+    callId: string;
+    appointmentId: string;
+    toUserId: string;
+  };
 }
 
 async function isParticipant(appointmentId: string, userId: string) {
@@ -97,7 +158,11 @@ export const realtime = {
   toUser<E extends keyof RealtimeEvents>(userId: string, event: E, payload: RealtimeEvents[E]) {
     io?.to(userRoom(userId)).emit(event, payload);
   },
-  toAppointment<E extends keyof RealtimeEvents>(appointmentId: string, event: E, payload: RealtimeEvents[E]) {
+  toAppointment<E extends keyof RealtimeEvents>(
+    appointmentId: string,
+    event: E,
+    payload: RealtimeEvents[E],
+  ) {
     io?.to(appointmentRoom(appointmentId)).emit(event, payload);
   },
 };

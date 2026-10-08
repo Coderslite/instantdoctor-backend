@@ -17,6 +17,33 @@ import { familySubscriptions } from './payments.js';
 export const PACKAGE_TYPES = ['basic', 'standard', 'special'] as const;
 export type PackageType = (typeof PACKAGE_TYPES)[number];
 
+/**
+ * The benefits a patient buys with a consultation. Kept as JSON so new
+ * display benefits can be introduced without a schema migration, while the
+ * capability fields remain explicit enough for the API and clients to enforce.
+ */
+export type AppointmentPackageFeatures = {
+  allowVideoCall: boolean;
+  allowVoiceCall: boolean;
+  allowChat: boolean;
+  allowPrescription: boolean;
+  allowFamilyCredit: boolean;
+  followUpDays: number;
+  /** Admin-authored, customer-facing inclusions (for example, "Care summary"). */
+  included: string[];
+};
+
+/** Safe baseline used by imports and tests; commercial packages opt in to extras. */
+export const DEFAULT_APPOINTMENT_PACKAGE_FEATURES: AppointmentPackageFeatures = {
+  allowVideoCall: false,
+  allowVoiceCall: false,
+  allowChat: true,
+  allowPrescription: true,
+  allowFamilyCredit: false,
+  followUpDays: 0,
+  included: ['Secure chat', 'Prescription when clinically appropriate'],
+};
+
 /** Consultation packages. `amountUsd` is the base price before regional discount/FX. */
 export const appointmentPackages = mysqlTable('appointment_packages', {
   id: id('id').primaryKey(),
@@ -27,6 +54,11 @@ export const appointmentPackages = mysqlTable('appointment_packages', {
   listAmountUsd: money('list_amount_usd'),
   durationSeconds: int('duration_seconds').notNull(),
   description: text('description'),
+  features: json('features').$type<AppointmentPackageFeatures>().notNull(),
+  /** Controls sales ordering without relying on the legacy package type. */
+  sortOrder: int('sort_order').notNull().default(0),
+  isRecommended: boolean('is_recommended').notNull().default(false),
+  badge: varchar('badge', { length: 64 }),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
@@ -67,6 +99,8 @@ export const appointments = mysqlTable(
     /** Package name as booked; legacy rows carry free-text values like "Daily Subscription". */
     packageLabel: varchar('package_label', { length: 128 }).notNull(),
     packageType: mysqlEnum('package_type', PACKAGE_TYPES),
+    /** Immutable copy of the selected package's benefits at booking time. */
+    packageFeatures: json('package_features').$type<AppointmentPackageFeatures>(),
 
     startTime: timestamp('start_time').notNull(),
     endTime: timestamp('end_time').notNull(),

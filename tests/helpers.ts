@@ -52,14 +52,16 @@ export async function createDoctor(overrides: Partial<typeof s.users.$inferInser
 }
 
 export async function createPackage(overrides: Partial<typeof s.appointmentPackages.$inferInsert> = {}) {
-  const id = overrides.id ?? newId();
+  const { features = s.DEFAULT_APPOINTMENT_PACKAGE_FEATURES, ...rest } = overrides;
+  const id = rest.id ?? newId();
   await db.insert(s.appointmentPackages).values({
     id,
     name: 'Standard',
     type: 'standard',
     amountUsd: 10,
     durationSeconds: 3600,
-    ...overrides,
+    features,
+    ...rest,
   });
   return id;
 }

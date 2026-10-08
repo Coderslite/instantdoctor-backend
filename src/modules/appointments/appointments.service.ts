@@ -8,6 +8,7 @@ import {
   doctorProfiles,
   users,
   type AppointmentStatus,
+  type AppointmentPackageFeatures,
 } from '../../db/schema/index.js';
 import { affectedRows, isDuplicateKeyError } from '../../lib/db-errors.js';
 import { badRequest, conflict, forbidden, notFound, unprocessable } from '../../lib/errors.js';
@@ -24,6 +25,15 @@ import { familyCreditDoctorEarning, requireAvailableFamilyCredit } from '../subs
 import type { CreateAppointmentInput } from './appointments.schemas.js';
 
 const TRIAL_DURATION_SECONDS = 30 * 60;
+const TRIAL_FEATURES: AppointmentPackageFeatures = {
+  allowVideoCall: false,
+  allowVoiceCall: false,
+  allowChat: true,
+  allowPrescription: true,
+  allowFamilyCredit: false,
+  followUpDays: 0,
+  included: ['Secure chat', 'Prescription when clinically appropriate'],
+};
 /** Statuses that occupy a doctor's calendar. */
 const BLOCKING_STATUSES: AppointmentStatus[] = ['pending', 'active'];
 
@@ -40,7 +50,7 @@ export async function listPackagesForUser(userId: string) {
     .select()
     .from(appointmentPackages)
     .where(eq(appointmentPackages.isActive, true))
-    .orderBy(appointmentPackages.amountUsd);
+    .orderBy(appointmentPackages.sortOrder, appointmentPackages.amountUsd);
   return Promise.all(
     packages.map(async (p) => {
       const quote = await quoteFromUsd(p.amountUsd, region);
@@ -50,6 +60,9 @@ export async function listPackagesForUser(userId: string) {
         type: p.type,
         description: p.description,
         durationSeconds: p.durationSeconds,
+        features: p.features,
+        isRecommended: p.isRecommended,
+        badge: p.badge,
         price: { amount: quote.amount, currency: quote.currency, amountUsd: quote.amountUsd },
       };
     }),
@@ -64,6 +77,7 @@ interface BookingPlan {
   packageId: string | null;
   packageLabel: string;
   packageType: AppointmentRow['packageType'];
+  packageFeatures: AppointmentPackageFeatures | null;
   durationSeconds: number;
   price: number;
   currency: string | null;
@@ -81,6 +95,7 @@ async function planBooking(userId: string, input: CreateAppointmentInput): Promi
       packageId: null,
       packageLabel: 'Trial Consultation',
       packageType: null,
+      packageFeatures: TRIAL_FEATURES,
       durationSeconds: TRIAL_DURATION_SECONDS,
       price: 0,
       currency: null,
@@ -97,7 +112,7 @@ async function planBooking(userId: string, input: CreateAppointmentInput): Promi
     .limit(1);
   if (!pkg) throw badRequest('Unknown or inactive package', [{ path: 'packageId', message: 'not found' }]);
 
-  if (input.useFamilyCredit && pkg.type !== 'basic') {
+  if (input.useFamilyCredit && !pkg.features.allowFamilyCredit) {
     throw badRequest('Family Care credits cover virtual GP consultations only', [{ path: 'packageId', message: 'select a GP package' }]);
   }
   const doctorId = input.doctorId ?? null;
@@ -123,6 +138,7 @@ async function planBooking(userId: string, input: CreateAppointmentInput): Promi
     packageId: pkg.id,
     packageLabel: pkg.name,
     packageType: pkg.type,
+    packageFeatures: pkg.features,
     durationSeconds: pkg.durationSeconds,
     price: input.useFamilyCredit ? 0 : quote.amount,
     currency: input.useFamilyCredit ? (african ? 'NGN' : 'USD') : quote.currency,
@@ -200,6 +216,7 @@ export async function createAppointment(
         packageId: plan.packageId,
         packageLabel: plan.packageLabel,
         packageType: plan.packageType,
+        packageFeatures: plan.packageFeatures,
         startTime,
         endTime,
         price: plan.price,
@@ -342,7 +359,7 @@ function serializeAppointment({ appointment: a, doctor, patient }: JoinedRow) {
     status: a.status,
     complaint: a.complaint,
     symptoms: a.symptoms,
-    package: { id: a.packageId, name: a.packageLabel, type: a.packageType },
+    package: { id: a.packageId, name: a.packageLabel, type: a.packageType, features: a.packageFeatures },
     startTime: a.startTime,
     endTime: a.endTime,
     price: a.price,

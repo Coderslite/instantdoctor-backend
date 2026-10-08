@@ -725,31 +725,32 @@ export async function createAppointment(input: AppointmentCreate) {
     if (!doctorRecord) throw notFound('Doctor');
   }
   const id = newId();
-  await db
-    .insert(appointments)
-    .values({
-      id,
-      userId: input.patientId,
-      doctorId: input.doctorId ?? null,
-      complaint: input.complaint ?? null,
-      symptoms: input.symptoms,
-      status: input.status,
-      packageLabel: input.packageLabel,
-      packageType: input.packageType ?? null,
-      startTime: input.startTime,
-      endTime: input.endTime,
-      timeZone: input.timeZone ?? null,
-      price: input.price,
-      currency: input.currency,
-      isTrial: input.isTrial,
-      isPaid: input.isPaid,
-      paidAt: input.isPaid ? new Date() : null,
-    });
+  await db.insert(appointments).values({
+    id,
+    userId: input.patientId,
+    doctorId: input.doctorId ?? null,
+    complaint: input.complaint ?? null,
+    symptoms: input.symptoms,
+    status: input.status,
+    packageLabel: input.packageLabel,
+    packageType: input.packageType ?? null,
+    startTime: input.startTime,
+    endTime: input.endTime,
+    timeZone: input.timeZone ?? null,
+    price: input.price,
+    currency: input.currency,
+    isTrial: input.isTrial,
+    isPaid: input.isPaid,
+    paidAt: input.isPaid ? new Date() : null,
+  });
   return getAppointment(id);
 }
 
 export async function listAppointmentPackages() {
-  return db.select().from(appointmentPackages).orderBy(appointmentPackages.amountUsd);
+  return db
+    .select()
+    .from(appointmentPackages)
+    .orderBy(appointmentPackages.sortOrder, appointmentPackages.amountUsd);
 }
 
 type AppointmentPackageInput = {
@@ -759,22 +760,28 @@ type AppointmentPackageInput = {
   listAmountUsd?: number | null;
   durationMinutes: number;
   description?: string | null;
+  features: (typeof appointmentPackages.$inferInsert)['features'];
+  sortOrder: number;
+  isRecommended: boolean;
+  badge?: string | null;
   isActive: boolean;
 };
 export async function createAppointmentPackage(input: AppointmentPackageInput) {
   const id = newId();
-  await db
-    .insert(appointmentPackages)
-    .values({
-      id,
-      name: input.name,
-      type: input.type,
-      amountUsd: input.amountUsd,
-      listAmountUsd: input.listAmountUsd ?? null,
-      durationSeconds: input.durationMinutes * 60,
-      description: input.description ?? null,
-      isActive: input.isActive,
-    });
+  await db.insert(appointmentPackages).values({
+    id,
+    name: input.name,
+    type: input.type,
+    amountUsd: input.amountUsd,
+    listAmountUsd: input.listAmountUsd ?? null,
+    durationSeconds: input.durationMinutes * 60,
+    description: input.description ?? null,
+    features: input.features,
+    sortOrder: input.sortOrder,
+    isRecommended: input.isRecommended,
+    badge: input.badge ?? null,
+    isActive: input.isActive,
+  });
   const [item] = await db.select().from(appointmentPackages).where(eq(appointmentPackages.id, id));
   return item;
 }
@@ -843,14 +850,12 @@ type PharmacyInput = {
 export async function createPharmacy(input: PharmacyInput) {
   const id = newId();
   const { password, ...values } = input;
-  await db
-    .insert(pharmacies)
-    .values({
-      id,
-      ...values,
-      email: values.email.toLowerCase(),
-      passwordHash: password ? await hashPassword(password) : null,
-    });
+  await db.insert(pharmacies).values({
+    id,
+    ...values,
+    email: values.email.toLowerCase(),
+    passwordHash: password ? await hashPassword(password) : null,
+  });
   return getAdminPharmacy(id);
 }
 export async function updatePharmacy(id: string, input: Partial<PharmacyInput>) {

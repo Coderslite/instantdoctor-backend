@@ -6,6 +6,7 @@ import { appointments, notifications, payments, referrals, users } from '../../s
 import { registerPaymentProvider } from '../../src/integrations/payments/registry.js';
 import type { PaymentProvider, VerifyResult } from '../../src/integrations/payments/types.js';
 import { newId } from '../../src/lib/ids.js';
+import { reconcilePendingPayments } from '../../src/modules/payments/payments.service.js';
 import { api, auth, createDoctor, createPackage, createUser, inHours, resetDatabase } from '../helpers.js';
 
 /** Fake Paystack: real webhook signing, scripted verification results. */
@@ -160,6 +161,60 @@ describe('payments', () => {
       .set('x-paystack-signature', 'forged')
       .send(JSON.stringify({ event: 'charge.success', data: { id: 1, reference: 'x' } }));
     expect(res.status).toBeGreaterThanOrEqual(400);
+  });
+
+  describe('reconciliation (lost webhook, app crashed mid-checkout)', () => {
+    const backdate = (reference: string, minutes: number) =>
+      db
+        .update(payments)
+        .set({ createdAt: new Date(Date.now() - minutes * 60_000) })
+        .where(eq(payments.reference, reference));
+    const paymentRow = async (reference: string) =>
+      (await db.select().from(payments).where(eq(payments.reference, reference)))[0]!;
+
+    it('settles a paid checkout that nobody verified and fulfils it once', async () => {
+      const { body } = await initialize('pay-recon-key-01');
+      await backdate(body.payment.reference, 10);
+      provider.outcome = () => ({ outcome: 'succeeded', amountMinor: 750_000, currency: 'NGN', providerReference: '777' });
+
+      // Overlapping sweeps (or two API instances): the row lock makes the
+      // second a no-op, so the purchase is fulfilled exactly once.
+      const [a, b] = await Promise.all([reconcilePendingPayments(), reconcilePendingPayments()]);
+      expect(a.succeeded + b.succeeded).toBeGreaterThanOrEqual(1);
+      expect((await paymentRow(body.payment.reference)).status).toBe('succeeded');
+      const [appt] = await db.select().from(appointments).where(eq(appointments.id, appointmentId));
+      expect(appt).toMatchObject({ isPaid: true });
+      const [ref] = await db.select().from(referrals).where(eq(referrals.userId, patient.id));
+      expect(ref!.totalCommissionEarned).toBe(750);
+    });
+
+    it('leaves fresh checkouts to the app and webhook', async () => {
+      const { body } = await initialize('pay-recon-key-02');
+      provider.outcome = () => ({ outcome: 'succeeded', amountMinor: 750_000, currency: 'NGN', providerReference: '778' });
+      const summary = await reconcilePendingPayments();
+      expect(summary.checked).toBe(0);
+      expect((await paymentRow(body.payment.reference)).status).toBe('pending');
+    });
+
+    it('keeps an unpaid checkout pending and stops after the window', async () => {
+      const { body } = await initialize('pay-recon-key-03');
+      await backdate(body.payment.reference, 10);
+      expect((await reconcilePendingPayments()).checked).toBe(1);
+      expect((await paymentRow(body.payment.reference)).status).toBe('pending');
+
+      await backdate(body.payment.reference, 4 * 24 * 60);
+      expect((await reconcilePendingPayments()).checked).toBe(0);
+    });
+
+    it('records a declined payment as failed', async () => {
+      const { body } = await initialize('pay-recon-key-04');
+      await backdate(body.payment.reference, 10);
+      provider.outcome = () => ({ outcome: 'failed', amountMinor: 0, currency: 'NGN', providerReference: '779', failureReason: 'Declined' });
+      expect((await reconcilePendingPayments()).failed).toBe(1);
+      expect((await paymentRow(body.payment.reference)).status).toBe('failed');
+      const [appt] = await db.select().from(appointments).where(eq(appointments.id, appointmentId));
+      expect(appt!.isPaid).toBe(false);
+    });
   });
 
   it('will not take payment for an already paid appointment', async () => {

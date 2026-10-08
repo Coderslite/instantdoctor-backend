@@ -113,6 +113,20 @@
       "when": 1791450000000,
       "tag": "0015_family_subscriptions",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "5",
+      "when": 1791460000000,
+      "tag": "0016_appointment_package_entitlements",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "5",
+      "when": 1791470000000,
+      "tag": "0017_backfill_active_appointment_entitlements",
+      "breakpoints": true
     }
   ]
 }
