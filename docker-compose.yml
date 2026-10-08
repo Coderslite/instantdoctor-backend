@@ -5,6 +5,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./uploads:/app/uploads
+      - ./secrets:/app/secrets:ro
 
   caddy:
     image: caddy:2

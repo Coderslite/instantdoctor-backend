@@ -8,3 +8,4 @@ coverage
 *.log
 migration-report*.json
 service-account*.json
+/secrets/
