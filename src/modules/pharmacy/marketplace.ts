@@ -1,6 +1,5 @@
 import { eq } from 'drizzle-orm';
-import type { Tx } from '../../db/client.js';
-import { db } from '../../db/client.js';
+import type { db, Tx } from '../../db/client.js';
 import {
   orderEvents,
   orderItems,
