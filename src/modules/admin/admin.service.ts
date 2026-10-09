@@ -197,7 +197,7 @@ export async function listUsers(role: 'user' | 'doctor', query: ListQuery) {
       appointmentCount: sql<number>`(
         select count(*) from ${appointments}
         where ${appointments.userId} = ${users.id}
-      )`,
+      )`.mapWith(Number),
     })
     .from(users)
     .where(where)
