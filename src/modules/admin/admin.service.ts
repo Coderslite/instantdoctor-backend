@@ -191,12 +191,17 @@ export async function listUsers(role: 'user' | 'doctor', query: ListQuery) {
       role: users.role,
       accountStatus: users.accountStatus,
       presence: users.presence,
+      lastSeenAt: users.lastSeenAt,
       walletBalance: users.walletBalance,
       createdAt: users.createdAt,
+      appointmentCount: sql<number>`(
+        select count(*) from ${appointments}
+        where ${appointments.userId} = ${users.id}
+      )`,
     })
     .from(users)
     .where(where)
-    .orderBy(desc(users.createdAt))
+    .orderBy(desc(users.lastSeenAt), desc(users.createdAt))
     .limit(query.limit)
     .offset(query.offset);
   const [total] = await db.select({ value: count() }).from(users).where(where);
