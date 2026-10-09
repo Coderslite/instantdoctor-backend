@@ -621,11 +621,11 @@ export async function adminListAuthors() {
       image: blogAuthors.image,
       links: blogAuthors.links,
       postCount:
-        sql<number>`(select count(*) from ${healthTips} where ${healthTips.authorId} = ${blogAuthors.id})`.mapWith(
+        sql<number>`(select count(*) from ${healthTips} where ${healthTips}.${sql.identifier(healthTips.authorId.name)} = ${blogAuthors}.${sql.identifier(blogAuthors.id.name)})`.mapWith(
           Number,
         ),
       reviewCount:
-        sql<number>`(select count(*) from ${healthTips} where ${healthTips.reviewerId} = ${blogAuthors.id})`.mapWith(
+        sql<number>`(select count(*) from ${healthTips} where ${healthTips}.${sql.identifier(healthTips.reviewerId.name)} = ${blogAuthors}.${sql.identifier(blogAuthors.id.name)})`.mapWith(
           Number,
         ),
     })
