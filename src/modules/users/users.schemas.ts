@@ -22,6 +22,7 @@ export const updateProfileSchema = z
       .refine(isCountryCode, 'Unknown country code')
       .optional(),
     currency: z.string().trim().length(3).toUpperCase().optional(),
+    earningCurrency: z.string().trim().length(3).toUpperCase().optional(),
     address: optionalText(512),
     location: z
       .object({ latitude: z.number().min(-90).max(90), longitude: z.number().min(-180).max(180) })

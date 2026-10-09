@@ -13,6 +13,7 @@ import {
   type PaymentProviderName,
 } from '../../db/schema/index.js';
 import { getPaymentProvider } from '../../integrations/payments/registry.js';
+import { doctorEarningFx, type DoctorEarningFx } from '../../integrations/exchange-rates.js';
 import {
   ProviderError,
   type ClientAction,
@@ -25,7 +26,7 @@ import { logger } from '../../lib/logger.js';
 import { fromMinorUnits, round2, toMinorUnits } from '../../lib/money.js';
 import { realtime } from '../../realtime/gateway.js';
 import { reserveSlotForPayment } from '../appointments/appointments.service.js';
-import { orderSurcharge } from '../pricing/fees.js';
+import { feePolicySchema, getFeePolicy, orderSurcharge } from '../pricing/fees.js';
 import { WALLET_CURRENCY } from '../wallet/wallet.ledger.js';
 import { familySubscriptionPrice, requireFamilySubscription } from '../subscriptions/subscriptions.service.js';
 import { runEffects, type Effect } from './effects.js';
@@ -80,6 +81,11 @@ export const BANK_TRANSFER_WINDOW_MINUTES = 30;
 export const BANK_TRANSFER_GRACE_MINUTES = 15;
 /** Paystack's Pay with Transfer is NGN-only. */
 const BANK_TRANSFER_CURRENCIES = new Set(['NGN']);
+const doctorEarningFxSchema = z.object({
+  currency: z.string().length(3),
+  rate: z.number().positive(),
+  capturedAt: z.iso.datetime(),
+});
 
 /** Still worth asking the provider about: pending, or an expired transfer whose money may yet land. */
 const awaitingMoney = (p: Pick<PaymentRow, 'status' | 'method'>) =>
@@ -128,10 +134,15 @@ interface Payable {
   surcharge: number;
   currency: string;
   description: string;
+  earningDoctorId?: string | null;
 }
 
 /** Derives what is owed from server-side state. The client never supplies prices. */
-async function resolvePayable(userId: string, input: InitializePaymentInput): Promise<Payable> {
+async function resolvePayable(
+  userId: string,
+  input: InitializePaymentInput,
+  feePolicy: Awaited<ReturnType<typeof getFeePolicy>>,
+): Promise<Payable> {
   switch (input.purpose) {
     case 'appointment': {
       const [a] = await db
@@ -156,6 +167,7 @@ async function resolvePayable(userId: string, input: InitializePaymentInput): Pr
         surcharge: 0,
         currency: a.currency,
         description: `Consultation: ${a.packageLabel}`,
+        earningDoctorId: a.doctorId,
       };
     }
     case 'order_checkout': {
@@ -169,7 +181,7 @@ async function resolvePayable(userId: string, input: InitializePaymentInput): Pr
       return {
         purposeRefId: c.id,
         baseAmount: c.totalAmount,
-        surcharge: orderSurcharge(c.subtotal),
+        surcharge: orderSurcharge(c.subtotal, feePolicy),
         currency: c.currency,
         description: 'Pharmacy order',
       };
@@ -246,7 +258,18 @@ export async function initializePayment(userId: string, input: InitializePayment
     if (live) return live;
   }
 
-  const payable = await resolvePayable(userId, input);
+  const feePolicy = await getFeePolicy();
+  const payable = await resolvePayable(userId, input, feePolicy);
+  let earningFx: DoctorEarningFx | null = null;
+  if (input.purpose === 'appointment' && payable.earningDoctorId) {
+    const [doctor] = await db
+      .select({ currency: users.earningCurrency })
+      .from(users)
+      .where(eq(users.id, payable.earningDoctorId))
+      .limit(1);
+    if (!doctor) throw notFound('Doctor');
+    earningFx = await doctorEarningFx(payable.currency, doctor.currency);
+  }
   if (input.method === 'bank_transfer' && !BANK_TRANSFER_CURRENCIES.has(payable.currency)) {
     throw unprocessable('METHOD_NOT_SUPPORTED', `Bank transfer is only available for payments in NGN (this one is ${payable.currency})`);
   }
@@ -273,6 +296,7 @@ export async function initializePayment(userId: string, input: InitializePayment
     currency: payable.currency,
     amountMinor: toMinorUnits(amount, payable.currency),
     idempotencyKey: idempotencyKey ?? null,
+    metadata: { feePolicy, ...(input.purpose === 'appointment' && { doctorEarningFx: earningFx }) },
   };
 
   try {
@@ -303,7 +327,7 @@ export async function initializePayment(userId: string, input: InitializePayment
       .update(payments)
       .set({
         providerReference: result.providerReference,
-        metadata: { clientAction: result.clientAction },
+        metadata: { ...payment.metadata, clientAction: result.clientAction },
         ...(providerFeeMinor > 0 && {
           surcharge: round2(payable.surcharge + providerFee),
           amount: round2(amount + providerFee),
@@ -463,13 +487,26 @@ export async function settle(paymentId: string, result: VerifyResult): Promise<P
     }
 
     const paidAt = new Date();
+    const feePolicy = payment.metadata?.feePolicy === undefined
+      ? await getFeePolicy(tx)
+      : feePolicySchema.parse(payment.metadata.feePolicy);
     let outcome: FulfillmentResult;
     switch (payment.purpose) {
-      case 'appointment':
-        outcome = await confirmAppointment(tx, payment.purposeRefId!, { currency: payment.currency });
+      case 'appointment': {
+        const earningFxValue = payment.metadata?.doctorEarningFx;
+        const earningFx = earningFxValue == null ? null : doctorEarningFxSchema.parse(earningFxValue);
+        outcome = await confirmAppointment(tx, payment.purposeRefId!, {
+          currency: payment.currency,
+          feePolicy,
+          doctorEarningFx: earningFx,
+        });
         break;
+      }
       case 'order_checkout':
-        outcome = await confirmCheckout(tx, payment.purposeRefId!);
+        outcome = await confirmCheckout(tx, payment.purposeRefId!, {
+          feePolicy,
+          surcharge: payment.surcharge,
+        });
         break;
       case 'lab_result':
         outcome = await confirmLabResult(tx, payment.purposeRefId!);

@@ -32,6 +32,7 @@ export function serializeMe(user: User, medical?: Medical | null) {
     otherLanguage: user.otherLanguage,
     country: user.country,
     currency: user.currency,
+    ...(user.role === 'doctor' ? { earningCurrency: user.earningCurrency } : {}),
     address: user.address,
     location:
       user.latitude !== null && user.longitude !== null

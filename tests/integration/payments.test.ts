@@ -4,8 +4,10 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { closeDatabase, db } from '../../src/db/client.js';
 import { appointments, notifications, payments, referrals, users } from '../../src/db/schema/index.js';
 import { registerPaymentProvider } from '../../src/integrations/payments/registry.js';
+import { primeRates } from '../../src/integrations/exchange-rates.js';
 import type { PaymentProvider, VerifyResult } from '../../src/integrations/payments/types.js';
 import { newId } from '../../src/lib/ids.js';
+import { signAdminAccessToken } from '../../src/lib/tokens.js';
 import { reconcilePendingPayments } from '../../src/modules/payments/payments.service.js';
 import { api, auth, createDoctor, createPackage, createUser, inHours, resetDatabase } from '../helpers.js';
 
@@ -42,6 +44,7 @@ const sign = (body: string) => createHmac('sha512', 'fake').update(body).digest(
 describe('payments', () => {
   let provider: FakePaystack;
   let patient: Awaited<ReturnType<typeof createUser>>;
+  let doctor: Awaited<ReturnType<typeof createDoctor>>;
   let appointmentId: string;
 
   beforeEach(async () => {
@@ -52,7 +55,7 @@ describe('payments', () => {
     const referrer = await createUser({ tag: 'refboss' });
     patient = await createUser({ country: 'NG', currency: 'NGN' });
     await db.insert(referrals).values({ id: newId(), userId: patient.id, referrerTag: 'refboss', referrerId: referrer.id });
-    const doctor = await createDoctor();
+    doctor = await createDoctor();
     const packageId = await createPackage({ amountUsd: 10 });
     const booked = await api()
       .post('/api/v1/appointments')
@@ -96,6 +99,81 @@ describe('payments', () => {
     expect(ref!.totalCommissionEarned).toBe(750);
     const [referrer] = await db.select().from(users).where(eq(users.tag, 'refboss'));
     expect(referrer!.referralBalance).toBe(750);
+  });
+
+  it('settles doctor and referral earnings using the policy stored when payment started', async () => {
+    const adminToken = signAdminAccessToken({ sub: newId(), role: 'admin' });
+    const authAdmin = { Authorization: `Bearer ${adminToken}` };
+    await api().put('/api/v1/admin/commercial-fees').set(authAdmin).send({
+      gatewayFeePercent: 0,
+      orderSurchargePercent: 2,
+      consultationPlatformPercent: 25,
+      pharmacyPlatformPercent: 5,
+      referralCommissionPercent: 20,
+    }).expect(200);
+
+    const { body } = await initialize('pay-fee-snapshot-key');
+    await api().put('/api/v1/admin/commercial-fees').set(authAdmin).send({
+      gatewayFeePercent: 0,
+      orderSurchargePercent: 2,
+      consultationPlatformPercent: 50,
+      pharmacyPlatformPercent: 5,
+      referralCommissionPercent: 5,
+    }).expect(200);
+    provider.outcome = () => ({
+      outcome: 'succeeded',
+      amountMinor: 750_000,
+      currency: 'NGN',
+      providerReference: '998',
+    });
+    await api()
+      .post(`/api/v1/payments/${body.payment.reference}/verify`)
+      .set(auth(patient.token))
+      .expect(200);
+
+    const [appt] = await db.select().from(appointments).where(eq(appointments.id, appointmentId));
+    expect(appt!.doctorEarning).toBe(5625);
+    const [ref] = await db.select().from(referrals).where(eq(referrals.userId, patient.id));
+    expect(ref!.totalCommissionEarned).toBe(1500);
+    const doctorAppointment = await api()
+      .get(`/api/v1/appointments/${appointmentId}`)
+      .set(auth(doctor.token));
+    expect(doctorAppointment.body.doctorEarning).toBe(5625);
+    const patientAppointment = await api()
+      .get(`/api/v1/appointments/${appointmentId}`)
+      .set(auth(patient.token));
+    expect(patientAppointment.body).not.toHaveProperty('doctorEarning');
+  });
+
+  it('locks the doctor earning currency and FX rate when payment starts', async () => {
+    primeRates({ NGN: 1500 });
+    await db.update(users).set({ earningCurrency: 'USD' }).where(eq(users.id, doctor.id));
+    const { body } = await initialize('pay-earning-currency-snapshot');
+    await db.update(users).set({ earningCurrency: 'EUR' }).where(eq(users.id, doctor.id));
+    provider.outcome = () => ({
+      outcome: 'succeeded',
+      amountMinor: 750_000,
+      currency: 'NGN',
+      providerReference: 'earning-fx',
+    });
+
+    await api()
+      .post(`/api/v1/payments/${body.payment.reference}/verify`)
+      .set(auth(patient.token))
+      .expect(200);
+
+    const [appt] = await db.select().from(appointments).where(eq(appointments.id, appointmentId));
+    expect(appt).toMatchObject({
+      doctorEarning: 4500,
+      doctorEarningConverted: 3,
+      doctorEarningCurrency: 'USD',
+    });
+    expect(appt!.doctorEarningExchangeRate).toBeCloseTo(1 / 1500, 7);
+    expect(appt!.doctorEarningConvertedAt).toBeInstanceOf(Date);
+    const doctorView = await api()
+      .get(`/api/v1/appointments/${appointmentId}`)
+      .set(auth(doctor.token));
+    expect(doctorView.body).toMatchObject({ doctorEarning: 3, doctorEarningCurrency: 'USD' });
   });
 
   it('pays the referral commission once even if two bookings are paid concurrently', async () => {

@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import { APPOINTMENT_STATUSES, LAB_RESULT_STATUSES, ORDER_STATUSES, PAYMENT_STATUSES } from '../../db/schema/index.js';
+import { feePolicyInputSchema } from '../pricing/fees.js';
+
+export const commercialFeesSchema = feePolicyInputSchema;
 
 export const adminLoginSchema = z.object({ email: z.email(), password: z.string().min(8).max(128) });
 export const adminListQuery = z.object({
@@ -66,6 +69,7 @@ export const updateDoctorSchema = z.object({
   firstName: z.string().trim().min(1).max(100).optional(), lastName: z.string().trim().min(1).max(100).optional(),
   email: z.email().optional(), phoneNumber: z.string().trim().max(32).nullable().optional(), gender: z.string().trim().max(32).nullable().optional(),
   country: z.string().trim().max(64).nullable().optional(), address: z.string().trim().max(512).nullable().optional(), currency: z.string().trim().length(3).toUpperCase().nullable().optional(),
+  earningCurrency: z.string().trim().length(3).toUpperCase().optional(),
   specialization: z.string().trim().max(128).nullable().optional(), experienceYears: z.coerce.number().int().min(0).max(80).nullable().optional(),
   bio: z.string().trim().max(5000).nullable().optional(), isAvailable: z.boolean().optional(), institution: z.string().trim().max(255).nullable().optional(),
   graduationYear: z.string().trim().max(8).nullable().optional(), housemanship: z.string().trim().max(255).nullable().optional(), housemanshipYear: z.string().trim().max(8).nullable().optional(),

@@ -39,6 +39,8 @@ const schema = z.object({
   OPS_EMAIL: z.string().default('activities@instantdoctor.co'),
   MAIL_LOGO_URL: z.url().default('https://instantdoctor.co/images/logo.png'),
   WEBSITE_URL: z.url().default('https://instantdoctor.co'),
+  /** Matches REVALIDATE_SECRET on the website; when set, blog changes refresh the site's cache at once. */
+  WEBSITE_REVALIDATE_SECRET: optionalString,
 
   GOOGLE_CLIENT_IDS: z
     .string()

@@ -85,6 +85,9 @@ export const Me = z
     otherLanguage: z.string().nullable(),
     country: z.string().nullable().meta({ example: 'NG' }),
     currency: currency.nullable(),
+    earningCurrency: currency.nullable().optional().meta({
+      description: 'Doctor-selected currency used to display new consultation earnings.',
+    }),
     address: z.string().nullable(),
     location: location.nullable(),
     tag: z.string().nullable().meta({ description: 'Referral username', example: 'ada2024' }),
@@ -254,12 +257,32 @@ export const Appointment = z
     isTrial: z.boolean(),
     isPaid: z.boolean(),
     paidAt: nullableDateTime,
+    doctorEarning: money.nullable().optional().meta({
+      description: 'The authenticated doctor’s earning, converted into their selected earning currency when an FX snapshot is available.',
+    }),
+    doctorEarningCurrency: currency.nullable().optional(),
+    doctorEarningOriginal: money.nullable().optional().meta({ description: 'The earning in the appointment charge currency.' }),
+    doctorEarningOriginalCurrency: currency.nullable().optional(),
+    doctorEarningExchangeRate: z.number().nullable().optional().meta({
+      description: 'The captured multiplier from the appointment currency to the doctor earning currency.',
+    }),
+    doctorEarningConvertedAt: nullableDateTime.optional(),
     doctor: UserSummary.nullable().meta({ description: 'Null while the request awaits a doctor.' }),
     patient: UserSummary,
     createdAt: dateTime,
     updatedAt: dateTime,
   })
   .meta({ id: 'Appointment' });
+
+export const CommercialFees = z
+  .object({
+    gatewayFeePercent: z.number().meta({ example: 0 }),
+    orderSurchargePercent: z.number().meta({ example: 2 }),
+    consultationPlatformPercent: z.number().meta({ example: 40 }),
+    pharmacyPlatformPercent: z.number().meta({ example: 5 }),
+    referralCommissionPercent: z.number().meta({ example: 10 }),
+  })
+  .meta({ id: 'CommercialFees' });
 
 export const Message = z
   .object({
@@ -460,9 +483,21 @@ export const Pharmacy = z
     email: z.email(),
     phoneNumber: z.string().nullable(),
     address: z.string().nullable(),
-    image: z.string().nullable(),
+    description: z.string().nullable(),
+    image: z.string().nullable().meta({ description: 'Square logo / profile image.' }),
+    coverImage: z.string().nullable().meta({ description: 'Wide storefront photo.' }),
     discount: z.number().int(),
     deliveryFeePerKm: money,
+    deliveryMinutes: z.number().int().meta({ description: 'Typical minutes from accepting to delivering.' }),
+    openingHours: z
+      .record(z.string(), z.object({ open: z.string(), close: z.string() }).nullable())
+      .nullable()
+      .meta({ description: 'Weekly hours keyed mon…sun, local "HH:mm"; null day = closed; null = not set (always open).' }),
+    isOpen: z.boolean().meta({ description: 'Can take an order right now.' }),
+    storeState: z.enum(['open', 'closed', 'paused', 'offline']),
+    storeLabel: z.string().meta({ example: 'Open · until 8:00 PM' }),
+    rating: z.number().nullable(),
+    ratingCount: z.number().int(),
     location: location.nullable(),
     distanceKm: z
       .number()
@@ -520,11 +555,50 @@ export const Order = z
     address: z.string().nullable(),
     latitude: z.number().nullable(),
     longitude: z.number().nullable(),
+    etaMinutes: z.number().int().nullable().meta({ description: 'Promised when the pharmacy accepted.' }),
+    riderName: z.string().nullable(),
+    riderPhone: z.string().nullable(),
+    cancelReason: z.string().nullable(),
     items: z.array(OrderItem),
     createdAt: dateTime,
     updatedAt: dateTime,
   })
   .meta({ id: 'Order' });
+
+export const OrderReview = z.object({
+  rating: z.number().int().min(1).max(5),
+  comment: z.string().nullable(),
+  reply: z.string().nullable(),
+  createdAt: dateTime,
+});
+
+export const OrderDetail = Order.extend({
+  events: z.array(
+    z.object({ status: z.string(), actor: z.enum(['system', 'pharmacy', 'customer']), note: z.string().nullable(), createdAt: dateTime }),
+  ),
+  pharmacy: z
+    .object({ id, name: z.string(), phoneNumber: z.string().nullable(), image: z.string().nullable(), address: z.string().nullable() })
+    .nullable(),
+  review: OrderReview.nullable(),
+  issues: z.array(
+    z.object({
+      id,
+      category: z.string(),
+      message: z.string(),
+      status: z.enum(['open', 'resolved']),
+      response: z.string().nullable(),
+      respondedAt: dateTime.nullable(),
+      createdAt: dateTime,
+    }),
+  ),
+  canReview: z.boolean(),
+  canReport: z.boolean(),
+  canConfirmDelivery: z.boolean(),
+}).meta({ id: 'OrderDetail' });
+
+export const PharmacyReview = z
+  .object({ rating: z.number().int(), comment: z.string().nullable(), reply: z.string().nullable(), author: z.string(), createdAt: dateTime })
+  .meta({ id: 'PharmacyReview' });
 
 export const CartQuote = z
   .object({

@@ -43,6 +43,7 @@ export const users = mysqlTable(
 
     country: varchar('country', { length: 64 }),
     currency: varchar('currency', { length: 3 }),
+    earningCurrency: varchar('earning_currency', { length: 3 }).notNull().default('NGN'),
     platform: varchar('platform', { length: 16 }),
     address: varchar('address', { length: 512 }),
     latitude: coordinate('latitude'),

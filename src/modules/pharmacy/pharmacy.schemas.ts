@@ -24,3 +24,18 @@ export const listOrdersQuery = z.object({
   offset: z.coerce.number().int().min(0).default(0),
   status: z.enum(['awaiting_payment', 'pending', 'processing', 'delivering', 'completed', 'cancelled']).optional(),
 });
+
+export const reviewSchema = z.object({
+  rating: z.coerce.number().int().min(1).max(5),
+  comment: z.string().trim().max(1000).nullable().optional(),
+});
+
+export const issueSchema = z.object({
+  category: z.enum(['missing_item', 'wrong_item', 'damaged', 'late', 'not_delivered', 'quality', 'other']),
+  message: z.string().trim().min(5).max(2000),
+});
+
+export const pageQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
+});

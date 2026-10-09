@@ -22,7 +22,10 @@
     "admin:create": "tsx --env-file=.env scripts/create-admin.ts",
     "pharmacy:create": "tsx --env-file=.env scripts/create-pharmacy.ts",
     "pharmacy:seed-categories": "tsx --env-file=.env scripts/seed-pharmacy-categories.ts",
+    "pharmacy:seed-categories:live": "DB_TARGET=live tsx --env-file=.env scripts/seed-pharmacy-categories.ts",
     "blog:backfill": "tsx --env-file=.env scripts/backfill-blog.ts",
+    "blog:seed-categories": "DB_TARGET=local tsx --env-file=.env scripts/seed-blog-categories.ts",
+    "blog:seed-categories:live": "DB_TARGET=live tsx --env-file=.env scripts/seed-blog-categories.ts",
     "blog:reseed": "tsx --env-file=.env scripts/reseed-blog.ts",
     "storage:cors": "tsx --env-file=.env scripts/configure-storage-cors.ts"
   },

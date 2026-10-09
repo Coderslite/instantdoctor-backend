@@ -83,7 +83,7 @@ export const passwordResetTokens = mysqlTable(
   ],
 );
 
-export const PORTAL_SUBJECTS = ['admin', 'pharmacy'] as const;
+export const PORTAL_SUBJECTS = ['admin', 'pharmacy', 'pharmacy_staff'] as const;
 export type PortalSubject = (typeof PORTAL_SUBJECTS)[number];
 
 export const portalSessions = mysqlTable(

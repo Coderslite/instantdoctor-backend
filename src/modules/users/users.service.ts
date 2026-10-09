@@ -8,6 +8,8 @@ import { newId } from '../../lib/ids.js';
 import type { z } from 'zod';
 import type { payoutAccountSchema, savedLocationSchema, updateProfileSchema } from './users.schemas.js';
 import { serializeMe, serializeUserSummary } from './users.serializer.js';
+import { usdRate } from '../../integrations/exchange-rates.js';
+import { isListedCurrency } from '../settings/settings.service.js';
 
 export async function getMe(userId: string) {
   const [row] = await db
@@ -21,7 +23,16 @@ export async function getMe(userId: string) {
 }
 
 export async function updateMe(userId: string, input: z.infer<typeof updateProfileSchema>) {
-  const { medical, location, ...profile } = input;
+  const { medical, location, earningCurrency, ...profile } = input;
+  if (earningCurrency !== undefined) {
+    const [current] = await db.select({ role: users.role }).from(users).where(eq(users.id, userId));
+    if (!current) throw notFound('User');
+    if (current.role !== 'doctor') throw forbidden('Only doctors can change their earning currency');
+    if (!(await isListedCurrency(earningCurrency))) {
+      throw badRequest('Choose a supported currency', [{ path: 'earningCurrency', message: 'unsupported' }]);
+    }
+    await usdRate(earningCurrency);
+  }
   if (profile.phoneNumber) {
     const [current] = await db.select({ country: users.country }).from(users).where(eq(users.id, userId));
     const normalized = toE164(profile.phoneNumber, profile.country ?? current?.country);
@@ -33,6 +44,7 @@ export async function updateMe(userId: string, input: z.infer<typeof updateProfi
   await db.transaction(async (tx) => {
     const patch = {
       ...profile,
+      ...(earningCurrency !== undefined && { earningCurrency }),
       ...(location !== undefined && {
         latitude: location?.latitude ?? null,
         longitude: location?.longitude ?? null,

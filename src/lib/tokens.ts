@@ -74,11 +74,27 @@ export function signPharmacyAccessToken(pharmacyId: string): string {
   });
 }
 
-export function verifyPharmacyAccessToken(token: string): { sub: string } {
+export function signPharmacyStaffAccessToken(pharmacyId: string, staffId: string, sessionVersion: number): string {
+  return jwt.sign({ role: 'pharmacy_staff', staffId, sessionVersion }, env.JWT_ACCESS_SECRET, {
+    subject: pharmacyId,
+    issuer: PHARMACY_ISSUER,
+    algorithm: 'HS256',
+    expiresIn: env.JWT_ACCESS_TTL as jwt.SignOptions['expiresIn'],
+  });
+}
+
+export function verifyPharmacyAccessToken(token: string): { sub: string; staffId?: string; sessionVersion?: number } {
   try {
     const payload = jwt.verify(token, env.JWT_ACCESS_SECRET, { issuer: PHARMACY_ISSUER, algorithms: ['HS256'] }) as jwt.JwtPayload;
-    if (!payload.sub || payload.role !== 'pharmacy') throw unauthorized('Invalid pharmacy access token');
-    return { sub: payload.sub };
+    if (!payload.sub) throw unauthorized('Invalid pharmacy access token');
+    if (payload.role === 'pharmacy') return { sub: payload.sub };
+    if (payload.role === 'pharmacy_staff' && typeof payload.staffId === 'string') {
+      if (!Number.isSafeInteger(payload.sessionVersion) || payload.sessionVersion < 0) {
+        throw unauthorized('Invalid pharmacy staff access token');
+      }
+      return { sub: payload.sub, staffId: payload.staffId, sessionVersion: payload.sessionVersion };
+    }
+    throw unauthorized('Invalid pharmacy access token');
   } catch {
     throw unauthorized('Invalid or expired pharmacy access token');
   }

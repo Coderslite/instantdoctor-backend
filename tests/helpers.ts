@@ -12,8 +12,8 @@ export const api = () => request(app);
 const TABLES = [
   'idempotency_keys', 'files', 'payment_webhook_events', 'payments', 'wallet_transactions', 'notifications',
   'referrals', 'reviews', 'prescriptions', 'appointment_messages', 'report_messages', 'reports',
-  'appointments', 'appointment_packages', 'order_items', 'orders', 'order_checkouts', 'products',
-  'pharmacies', 'lab_result_files', 'lab_results', 'care_summary_shares', 'family_subscriptions', 'vital_readings', 'care_plans',
+  'appointments', 'appointment_packages', 'order_events', 'order_issues', 'pharmacy_reviews', 'inventory_movements', 'purchase_order_items', 'purchase_orders', 'suppliers', 'order_items', 'orders', 'order_checkouts', 'products',
+  'pharmacy_staff', 'pharmacies', 'lab_result_files', 'lab_results', 'care_summary_shares', 'family_subscriptions', 'vital_readings', 'care_plans',
   'medication_doses', 'medications', 'family_profiles', 'service_charges', 'app_settings',
   'doctor_profiles', 'payout_accounts', 'user_medical_profiles', 'refresh_tokens', 'portal_sessions', 'admins', 'password_reset_tokens', 'otp_codes', 'auth_identities', 'users',
 ];

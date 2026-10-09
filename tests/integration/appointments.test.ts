@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { closeDatabase, db } from '../../src/db/client.js';
 import { appSettings, appointments, users } from '../../src/db/schema/index.js';
+import { primeRates } from '../../src/integrations/exchange-rates.js';
 import { api, auth, createDoctor, createPackage, createUser, inHours, resetDatabase } from '../helpers.js';
 
 afterAll(() => closeDatabase());
@@ -162,5 +163,31 @@ describe('POST /api/v1/appointments/:id/accept', () => {
     const booked = await book(patient.token, 'claim-unpaid-01', { packageId, startTime: inHours(3) });
     const res = await api().post(`/api/v1/appointments/${booked.body.id}/accept`).set(auth(doctor.token));
     expect(res.status).toBe(422);
+  });
+
+  it('converts an open request into the accepting doctor currency at acceptance', async () => {
+    primeRates({ NGN: 1500 });
+    const packageId = await createPackage({ amountUsd: 10 });
+    const patient = await createUser({ country: 'NG', currency: 'NGN' });
+    const doctor = await createDoctor();
+    await db.update(users).set({ earningCurrency: 'USD' }).where(eq(users.id, doctor.id));
+    const booked = await book(patient.token, 'claim-earning-currency', { packageId, startTime: inHours(4) });
+    await db
+      .update(appointments)
+      .set({ isPaid: true, doctorEarning: 4500 })
+      .where(eq(appointments.id, booked.body.id));
+
+    const accepted = await api()
+      .post(`/api/v1/appointments/${booked.body.id}/accept`)
+      .set(auth(doctor.token))
+      .expect(200);
+    expect(accepted.body).toMatchObject({
+      doctorEarning: 3,
+      doctorEarningCurrency: 'USD',
+      doctorEarningOriginal: 4500,
+      doctorEarningOriginalCurrency: 'NGN',
+    });
+    const [row] = await db.select().from(appointments).where(eq(appointments.id, booked.body.id));
+    expect(row!.doctorEarningConvertedAt).toBeInstanceOf(Date);
   });
 });

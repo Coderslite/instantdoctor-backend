@@ -127,6 +127,48 @@
       "when": 1791470000000,
       "tag": "0017_backfill_active_appointment_entitlements",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "5",
+      "when": 1791480000000,
+      "tag": "0018_pharmacy_inventory_controls",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "5",
+      "when": 1791490000000,
+      "tag": "0019_pharmacy_marketplace",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "5",
+      "when": 1791540000000,
+      "tag": "0020_pharmacy_staff",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "5",
+      "when": 1791550000000,
+      "tag": "0021_pharmacy_staff_accounts",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "5",
+      "when": 1791560000000,
+      "tag": "0022_pharmacy_staff_session_version",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "5",
+      "when": 1791570000000,
+      "tag": "0023_doctor_earning_currency",
+      "breakpoints": true
     }
   ]
 }

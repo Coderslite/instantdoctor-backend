@@ -1,6 +1,7 @@
 import { env } from '../config/env.js';
 import { serviceUnavailable } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
+import { fromMinorUnits, toMinorUnits } from '../lib/money.js';
 
 interface RateTable {
   rates: Record<string, number>;
@@ -41,6 +42,33 @@ export async function usdRate(currency: string): Promise<number> {
     throw serviceUnavailable(`No exchange rate available for ${code}`);
   }
   return rate;
+}
+
+/** Returns the FX multiplier to convert one unit of `source` into `target`. */
+export async function currencyExchangeRate(source: string, target: string): Promise<number> {
+  const from = source.toUpperCase();
+  const to = target.toUpperCase();
+  if (from === to) return 1;
+  const [sourceUsdRate, targetUsdRate] = await Promise.all([usdRate(from), usdRate(to)]);
+  return targetUsdRate / sourceUsdRate;
+}
+
+export function convertCurrencyAmount(amount: number, currency: string, rate: number): number {
+  return fromMinorUnits(toMinorUnits(amount * rate, currency), currency);
+}
+
+export interface DoctorEarningFx {
+  currency: string;
+  rate: number;
+  capturedAt: string;
+}
+
+export async function doctorEarningFx(source: string, target: string): Promise<DoctorEarningFx> {
+  return {
+    currency: target.toUpperCase(),
+    rate: await currencyExchangeRate(source, target),
+    capturedAt: new Date().toISOString(),
+  };
 }
 
 /** Test hook. */

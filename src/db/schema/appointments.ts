@@ -10,7 +10,7 @@ import {
   uniqueIndex,
   varchar,
 } from 'drizzle-orm/mysql-core';
-import { createdAt, id, money, timestamp, updatedAt } from '../columns.js';
+import { createdAt, exchangeRate, id, money, timestamp, updatedAt } from '../columns.js';
 import { users } from './users.js';
 import { familySubscriptions } from './payments.js';
 
@@ -118,6 +118,10 @@ export const appointments = mysqlTable(
     /** Unpaid bookings block the doctor's slot until this instant (extended on payment start). */
     holdExpiresAt: timestamp('hold_expires_at'),
     doctorEarning: money('doctor_earning'),
+    doctorEarningConverted: money('doctor_earning_converted'),
+    doctorEarningCurrency: varchar('doctor_earning_currency', { length: 3 }),
+    doctorEarningExchangeRate: exchangeRate('doctor_earning_exchange_rate'),
+    doctorEarningConvertedAt: timestamp('doctor_earning_converted_at'),
 
     /** Client `Idempotency-Key` that created this row; guarantees one booking per key. */
     idempotencyKey: varchar('idempotency_key', { length: 128 }),

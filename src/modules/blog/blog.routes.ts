@@ -1,8 +1,13 @@
 import express, { Router, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import { isTest } from '../../config/env.js';
+import { refreshWebsiteBlog } from '../../integrations/website.js';
 import { parse } from '../../lib/validation.js';
-import { authenticateAdmin, currentAdmin, requireAdminRole } from '../../middleware/authenticate-admin.js';
+import {
+  authenticateAdmin,
+  currentAdmin,
+  requireAdminRole,
+} from '../../middleware/authenticate-admin.js';
 import { uploadFile } from '../files/files.service.js';
 import { singleFile } from '../files/upload-middleware.js';
 import * as analytics from './blog.analytics.js';
@@ -56,7 +61,13 @@ const requestInfo = (req: Request): analytics.RequestInfo => ({
 
 blogRouter.post('/posts/:slug/view', viewLimiter, beaconBody, async (req, res) => {
   const beacon = analytics.viewBeacon.safeParse(beaconJson(req));
-  res.json(await analytics.recordView(String(req.params.slug), beacon.success ? beacon.data : {}, requestInfo(req)));
+  res.json(
+    await analytics.recordView(
+      String(req.params.slug),
+      beacon.success ? beacon.data : {},
+      requestInfo(req),
+    ),
+  );
 });
 blogRouter.post('/views/engagement', viewLimiter, beaconBody, async (req, res) => {
   const beacon = analytics.engagementBeacon.safeParse(beaconJson(req));
@@ -80,6 +91,11 @@ blogRouter.get('/sitemap', cache(300), async (_req, res) => res.json(await servi
 /** Mounted at /admin/blog. Any admin can read; admins and marketers can write. */
 export const adminBlogRouter = Router();
 adminBlogRouter.use(authenticateAdmin);
+// Any successful change to posts, categories or authors refreshes the live website's blog cache.
+adminBlogRouter.use((req, res, next) => {
+  if (req.method !== 'GET') res.on('finish', () => res.statusCode < 400 && refreshWebsiteBlog());
+  next();
+});
 const canWrite = requireAdminRole('admin', 'marketer');
 
 adminBlogRouter.get('/analytics', async (req, res) =>
@@ -138,5 +154,9 @@ adminBlogRouter.delete('/authors/:id', canWrite, async (req, res) =>
 
 /** Images for featured images and the editor body. */
 adminBlogRouter.post('/uploads', canWrite, singleFile, async (req, res) => {
-  res.status(201).json(await uploadFile({ kind: 'admin', id: currentAdmin(req).adminId }, 'blog_image', req.file!));
+  res
+    .status(201)
+    .json(
+      await uploadFile({ kind: 'admin', id: currentAdmin(req).adminId }, 'blog_image', req.file!),
+    );
 });

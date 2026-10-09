@@ -18,6 +18,8 @@ import * as carePlans from '../modules/care-plans/care-plans.schemas.js';
 import * as family from '../modules/family/family.schemas.js';
 import { initializePaymentSchema } from '../modules/payments/payments.service.js';
 import * as pharmacy from '../modules/pharmacy/pharmacy.schemas.js';
+import * as pharmacyPortal from '../modules/pharmacy-portal/pharmacy-portal.schemas.js';
+import { feePolicyInputSchema } from '../modules/pricing/fees.js';
 import { listReferralsQuery } from '../modules/referrals/referrals.schemas.js';
 import * as reports from '../modules/reports/reports.schemas.js';
 import { FILE_POLICIES, FILE_PURPOSES } from '../modules/files/file-policies.js';
@@ -300,7 +302,7 @@ op('post', '/auth/password/change', {
 op('get', '/users/me', { tag: 'Users', summary: 'My profile', ok: { 200: c.Me } });
 op('patch', '/users/me', {
   tag: 'Users',
-  summary: 'Update my profile, region and medical details',
+  summary: 'Update my profile, region, doctor earning currency and medical details',
   body: users.updateProfileSchema,
   ok: { 200: c.Me },
 });
@@ -754,9 +756,37 @@ op('get', '/orders', {
 });
 op('get', '/orders/:id', {
   tag: 'Pharmacy',
-  summary: 'Order details and tracking status',
+  summary: 'Order details, tracking timeline, review and reported problems',
   params: idParam,
-  ok: { 200: c.Order },
+  ok: { 200: c.OrderDetail },
+});
+op('post', '/orders/:id/confirm-delivery', {
+  tag: 'Pharmacy',
+  summary: 'Confirm I received an order that is out for delivery',
+  params: idParam,
+  ok: { 200: c.OrderDetail },
+});
+op('post', '/orders/:id/review', {
+  tag: 'Pharmacy',
+  summary: 'Rate the pharmacy for a delivered order (once)',
+  params: idParam,
+  body: pharmacy.reviewSchema,
+  ok: { 201: c.OrderDetail },
+});
+op('post', '/orders/:id/issues', {
+  tag: 'Pharmacy',
+  summary: 'Report a problem with an order',
+  description: 'The pharmacy is emailed and responds from its workspace; the customer is notified.',
+  params: idParam,
+  body: pharmacy.issueSchema,
+  ok: { 201: c.OrderDetail },
+});
+op('get', '/pharmacies/:id/reviews', {
+  tag: 'Pharmacy',
+  summary: 'Reviews for a pharmacy, newest first',
+  params: idParam,
+  query: pharmacy.pageQuery,
+  ok: { 200: z.object({ items: z.array(c.PharmacyReview) }) },
 });
 
 // ─── Health ──────────────────────────────────────────────────────────────────
@@ -1251,6 +1281,19 @@ op('post', '/admin/auth/refresh', {
   body: auth.refreshSchema,
   ok: { 200: z.object({ session: c.Session }) },
 });
+op('get', '/admin/commercial-fees', {
+  tag: 'Admin',
+  summary: 'Get the commercial fee policy',
+  ok: { 200: z.object({ fees: c.CommercialFees }) },
+});
+op('put', '/admin/commercial-fees', {
+  tag: 'Admin',
+  summary: 'Update the commercial fee policy',
+  description: 'Requires an administrator role. The values affect new payment calculations; rates stored with a payment are retained for settlement.',
+  body: feePolicyInputSchema,
+  ok: { 200: z.object({ fees: c.CommercialFees }) },
+  errors: { 403: 'FORBIDDEN — requires the administrator role' },
+});
 op('post', '/admin/auth/logout', {
   tag: 'Auth',
   summary: 'Sign a admin out on this device',
@@ -1291,6 +1334,62 @@ op('post', '/pharmacy-portal/uploads', {
   body: { multipart: uploadDocSchema },
   ok: { 201: c.StoredFile },
   errors: { 403: 'FORBIDDEN', 422: 'UNSUPPORTED_FILE_TYPE | FILE_TOO_LARGE', 502: 'STORAGE_ERROR' },
+});
+op('get', '/pharmacy-portal/staff', {
+  tag: 'Pharmacy portal',
+  summary: 'List staff for the authenticated pharmacy',
+  ok: {
+    200: z.object({
+      items: z.array(
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          email: z.string().nullable(),
+          phoneNumber: z.string().nullable(),
+          role: z.string(),
+          status: z.enum(['active', 'inactive']),
+          createdAt: z.date(),
+          updatedAt: z.date(),
+        }),
+      ),
+    }),
+  },
+});
+op('post', '/pharmacy-portal/staff', {
+  tag: 'Pharmacy portal',
+  summary: 'Create a staff account with a temporary password',
+  description: 'Owner-only. Staff sign in with the supplied email and temporary password and must change that password before using the workspace.',
+  body: pharmacyPortal.staffSchema,
+  ok: {
+    201: z.object({
+      id: z.string(),
+      name: z.string(),
+      email: z.string().nullable(),
+      phoneNumber: z.string().nullable(),
+      role: z.string(),
+      status: z.enum(['active', 'inactive']),
+      createdAt: z.date(),
+      updatedAt: z.date(),
+    }),
+  },
+});
+op('patch', '/pharmacy-portal/staff/:id', {
+  tag: 'Pharmacy portal',
+  summary: 'Update a staff account role or active status',
+  description: 'Owner-only. Deactivating an account revokes its refresh sessions.',
+  body: pharmacyPortal.updateStaffSchema,
+  ok: {
+    200: z.object({
+      id: z.string(),
+      name: z.string(),
+      email: z.string().nullable(),
+      phoneNumber: z.string().nullable(),
+      role: z.string(),
+      status: z.enum(['active', 'inactive']),
+      createdAt: z.date(),
+      updatedAt: z.date(),
+    }),
+  },
 });
 const DIRECT_UPLOAD = [
   '**Preferred upload flow** — the file goes straight to storage, never through the API:',

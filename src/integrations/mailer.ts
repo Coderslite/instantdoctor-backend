@@ -35,14 +35,17 @@ export const mailer = {
     deliveryAddress?: string | null;
   }) => send(input.to, 'pharmacy-order', templates.pharmacyNewOrder(input)),
 
-  orderStatusUpdate: (input: {
-    to: string;
-    firstName?: string | null;
-    trackingId: string;
-    status: string;
-    items: OrderLine[];
-    total: string;
-  }) => send(input.to, 'order-status', templates.orderStatusUpdate(input)),
+  orderStatusUpdate: (input: { to: string } & Parameters<typeof templates.orderStatusUpdate>[0]) =>
+    send(input.to, 'order-status', templates.orderStatusUpdate(input)),
+
+  orderReceipt: (input: { to: string } & Parameters<typeof templates.orderReceipt>[0]) =>
+    send(input.to, 'order-receipt', templates.orderReceipt(input)),
+
+  pharmacyOrderIssue: (input: { to: string } & Parameters<typeof templates.pharmacyOrderIssue>[0]) =>
+    send(input.to, 'pharmacy-issue', templates.pharmacyOrderIssue(input)),
+
+  pharmacyNewReview: (input: { to: string } & Parameters<typeof templates.pharmacyNewReview>[0]) =>
+    send(input.to, 'pharmacy-review', templates.pharmacyNewReview(input)),
 
   appointmentUpdate: (input: { to: string } & templates.AppointmentEmailInput) =>
     send(input.to, `appointment-${input.event}`, templates.appointmentUpdate(input)),

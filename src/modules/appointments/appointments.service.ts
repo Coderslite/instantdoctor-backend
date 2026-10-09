@@ -23,6 +23,7 @@ import { getAppSettings, getTrialDoctorId } from '../settings/settings.service.j
 import { serializeUserSummary } from '../users/users.serializer.js';
 import { familyCreditDoctorEarning, requireAvailableFamilyCredit } from '../subscriptions/subscriptions.service.js';
 import type { CreateAppointmentInput } from './appointments.schemas.js';
+import { convertCurrencyAmount, doctorEarningFx } from '../../integrations/exchange-rates.js';
 
 const TRIAL_DURATION_SECONDS = 30 * 60;
 const TRIAL_FEATURES: AppointmentPackageFeatures = {
@@ -262,11 +263,12 @@ const holdUntil = () => new Date(Date.now() + env.BOOKING_HOLD_MINUTES * 60_000)
 /** Serialises all calendar changes for one doctor. */
 async function lockDoctor(tx: Tx, doctorId: string) {
   const [doctor] = await tx
-    .select({ id: users.id })
+    .select({ id: users.id, earningCurrency: users.earningCurrency })
     .from(users)
     .where(and(eq(users.id, doctorId), eq(users.role, 'doctor')))
     .for('update');
   if (!doctor) throw unprocessable('DOCTOR_UNAVAILABLE', 'The doctor no longer exists');
+  return doctor;
 }
 
 /**
@@ -353,7 +355,10 @@ const summaryOf = (u: typeof doctorUser | typeof patientUser) => ({
 type Summary = Parameters<typeof serializeUserSummary>[0];
 type JoinedRow = Awaited<ReturnType<typeof baseQuery>>[number];
 
-function serializeAppointment({ appointment: a, doctor, patient }: JoinedRow) {
+function serializeAppointment(
+  { appointment: a, doctor, patient }: JoinedRow,
+  includeDoctorEarning = false,
+) {
   return {
     id: a.id,
     status: a.status,
@@ -367,6 +372,16 @@ function serializeAppointment({ appointment: a, doctor, patient }: JoinedRow) {
     isTrial: a.isTrial,
     isPaid: a.isPaid,
     paidAt: a.paidAt,
+    ...(includeDoctorEarning && a.doctorId
+      ? {
+          doctorEarning: a.doctorEarningConverted ?? a.doctorEarning,
+          doctorEarningCurrency: a.doctorEarningCurrency ?? a.currency,
+          doctorEarningOriginal: a.doctorEarning,
+          doctorEarningOriginalCurrency: a.currency,
+          doctorEarningExchangeRate: a.doctorEarningExchangeRate,
+          doctorEarningConvertedAt: a.doctorEarningConvertedAt,
+        }
+      : {}),
     /** Null while the request is waiting for a doctor to accept it. */
     doctor: doctor?.id ? serializeUserSummary(doctor as Summary) : null,
     patient: serializeUserSummary(patient as Summary), // inner join: always present
@@ -403,7 +418,7 @@ export async function listAppointments(
     .orderBy(desc(appointments.updatedAt))
     .limit(query.limit)
     .offset(query.offset);
-  return rows.map(serializeAppointment);
+  return rows.map((row) => serializeAppointment(row, viewer.role === 'doctor'));
 }
 
 /** Paid, upcoming open requests that any doctor may accept. */
@@ -420,7 +435,7 @@ export async function listOpenRequests(query: { limit: number; offset: number })
     .orderBy(appointments.startTime)
     .limit(query.limit)
     .offset(query.offset);
-  return rows.map(serializeAppointment);
+  return rows.map((row) => serializeAppointment(row, true));
 }
 
 export async function getAppointmentForUser(viewer: { userId: string; role: UserRole }, appointmentId: string) {
@@ -430,7 +445,7 @@ export async function getAppointmentForUser(viewer: { userId: string; role: User
   // Doctors may view an open request before accepting it.
   const isOpenForDoctor = viewer.role === 'doctor' && row.appointment.doctorId === null;
   if (!isParticipant && !isOpenForDoctor) throw notFound('Appointment');
-  return serializeAppointment(row);
+  return serializeAppointment(row, viewer.role === 'doctor');
 }
 
 /** Loads the raw row and asserts the caller is a participant. */
@@ -455,7 +470,7 @@ export async function deleteAppointment(userId: string, appointmentId: string) {
  */
 export async function acceptAppointment(doctorId: string, appointmentId: string) {
   const patientId = await db.transaction(async (tx) => {
-    await lockDoctor(tx, doctorId);
+    const doctor = await lockDoctor(tx, doctorId);
     const [row] = await tx.select().from(appointments).where(eq(appointments.id, appointmentId)).for('update');
     if (!row || row.status === 'deleted') throw notFound('Appointment');
     if (row.doctorId && row.doctorId !== doctorId) throw conflict('ALREADY_TAKEN', 'Another doctor has accepted this appointment');
@@ -464,7 +479,22 @@ export async function acceptAppointment(doctorId: string, appointmentId: string)
     if (row.userId === doctorId) throw forbidden();
 
     await assertSlotFree(tx, doctorId, row.startTime, row.endTime, row.id);
-    await tx.update(appointments).set({ doctorId, status: 'active' }).where(eq(appointments.id, appointmentId));
+    const earningFx = row.doctorEarningConverted === null && row.doctorEarning !== null && row.currency
+      ? await doctorEarningFx(row.currency, doctor.earningCurrency)
+      : null;
+    await tx
+      .update(appointments)
+      .set({
+        doctorId,
+        status: 'active',
+        ...(earningFx && {
+          doctorEarningConverted: convertCurrencyAmount(row.doctorEarning!, earningFx.currency, earningFx.rate),
+          doctorEarningCurrency: earningFx.currency,
+          doctorEarningExchangeRate: earningFx.rate,
+          doctorEarningConvertedAt: new Date(earningFx.capturedAt),
+        }),
+      })
+      .where(eq(appointments.id, appointmentId));
     return row.userId;
   });
   realtime.toUser(patientId, 'appointment:updated', { id: appointmentId, status: 'active', isPaid: true });

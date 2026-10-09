@@ -17,6 +17,10 @@ pharmacyRouter.get('/pharmacies/:id', async (req, res) => {
   res.json(await service.getPharmacy(req.params.id));
 });
 
+pharmacyRouter.get('/pharmacies/:id/reviews', async (req, res) => {
+  res.json({ items: await service.listPharmacyReviews(req.params.id, parse(schemas.pageQuery, req.query)) });
+});
+
 pharmacyRouter.get('/pharmacies/:id/products', async (req, res) => {
   res.json({ items: await service.listPharmacyProducts(req.params.id) });
 });
@@ -48,4 +52,18 @@ pharmacyRouter.get('/orders', async (req, res) => {
 
 pharmacyRouter.get('/orders/:id', async (req, res) => {
   res.json(await service.getOrder(currentUser(req).userId, req.params.id));
+});
+
+pharmacyRouter.post('/orders/:id/confirm-delivery', async (req, res) => {
+  res.json(await service.confirmDelivery(currentUser(req).userId, req.params.id));
+});
+
+pharmacyRouter.post('/orders/:id/review', async (req, res) => {
+  const input = parse(schemas.reviewSchema, req.body);
+  res.status(201).json(await service.reviewOrder(currentUser(req).userId, req.params.id, input));
+});
+
+pharmacyRouter.post('/orders/:id/issues', async (req, res) => {
+  const input = parse(schemas.issueSchema, req.body);
+  res.status(201).json(await service.reportOrderIssue(currentUser(req).userId, req.params.id, input));
 });

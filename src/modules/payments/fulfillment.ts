@@ -12,6 +12,7 @@ import {
   users,
 } from '../../db/schema/index.js';
 import { mailer } from '../../integrations/mailer.js';
+import { convertCurrencyAmount, doctorEarningFx, type DoctorEarningFx } from '../../integrations/exchange-rates.js';
 import { emailAppointmentUpdate } from '../appointments/appointment-emails.js';
 import { sendPush, type PushMessage } from '../../integrations/push.js';
 import { notFound } from '../../lib/errors.js';
@@ -19,7 +20,8 @@ import { realtime } from '../../realtime/gateway.js';
 import { doctorPushTokens } from '../doctors/doctors.service.js';
 import { activateFamilySubscription } from '../subscriptions/subscriptions.service.js';
 import { createNotification } from '../notifications/notifications.service.js';
-import { doctorEarning, pharmacySplit, referralCommission } from '../pricing/fees.js';
+import { doctorEarning, orderSurcharge, pharmacySplit, referralCommission, type FeePolicy } from '../pricing/fees.js';
+import { formatNaira, recordOrderEvent } from '../pharmacy/marketplace.js';
 import { creditReferralBalance, credit } from '../wallet/wallet.ledger.js';
 import type { Effect } from './effects.js';
 
@@ -66,7 +68,7 @@ const fmt = (d: Date) =>
 export async function confirmAppointment(
   tx: Tx,
   appointmentId: string,
-  opts: { currency?: string } = {},
+  opts: { currency?: string; feePolicy?: FeePolicy; doctorEarningFx?: DoctorEarningFx | null } = {},
 ): Promise<FulfillmentResult> {
   const [appointment] = await tx
     .select()
@@ -77,17 +79,34 @@ export async function confirmAppointment(
   if (appointment.isPaid && !appointment.isTrial) return { effects: [], duplicate: true };
 
   const now = new Date();
+  const earning = appointment.isTrial
+    ? 0
+    : appointment.isSubscriptionCredit
+      ? appointment.doctorEarning
+      : doctorEarning(appointment.price, opts.feePolicy);
+  let earningFx = opts.doctorEarningFx ?? null;
+  if (appointment.doctorId && appointment.currency && !earningFx) {
+    const [doctor] = await tx
+      .select({ currency: users.earningCurrency })
+      .from(users)
+      .where(eq(users.id, appointment.doctorId))
+      .limit(1);
+    if (!doctor) throw notFound('Doctor');
+    earningFx = await doctorEarningFx(appointment.currency, doctor.currency);
+  }
   await tx
     .update(appointments)
     .set({
       isPaid: true,
       paidAt: appointment.paidAt ?? now,
       currency: opts.currency ?? appointment.currency,
-      doctorEarning: appointment.isTrial
-        ? 0
-        : appointment.isSubscriptionCredit
-          ? appointment.doctorEarning
-          : doctorEarning(appointment.price),
+      doctorEarning: earning,
+      ...(appointment.doctorId && earningFx && earning !== null && {
+        doctorEarningConverted: convertCurrencyAmount(earning, earningFx.currency, earningFx.rate),
+        doctorEarningCurrency: earningFx.currency,
+        doctorEarningExchangeRate: earningFx.rate,
+        doctorEarningConvertedAt: new Date(earningFx.capturedAt),
+      }),
     })
     .where(eq(appointments.id, appointmentId));
   await tx.update(users).set({ hasPaid: true }).where(eq(users.id, appointment.userId));
@@ -106,7 +125,9 @@ export async function confirmAppointment(
       ),
     );
   if ((prior?.n ?? 0) === 0 && appointment.price > 0) {
-    effects.push(...(await awardReferralCommission(tx, appointment.userId, appointment.price, appointment.currency)));
+    effects.push(
+      ...(await awardReferralCommission(tx, appointment.userId, appointment.price, appointment.currency, opts.feePolicy)),
+    );
   }
 
   effects.push(
@@ -158,6 +179,7 @@ async function awardReferralCommission(
   referredUserId: string,
   amount: number,
   currency: string | null,
+  feePolicy?: FeePolicy,
 ): Promise<Effect[]> {
   const [referral] = await tx
     .select()
@@ -169,7 +191,7 @@ async function awardReferralCommission(
   // race-free even if two of the user's bookings are paid concurrently.
   if (referral.lastCommissionAt) return [];
 
-  const commission = referralCommission(amount);
+  const commission = referralCommission(amount, feePolicy);
   if (commission <= 0) return [];
 
   await tx
@@ -195,7 +217,11 @@ async function awardReferralCommission(
 
 // ─── Pharmacy orders ─────────────────────────────────────────────────────────
 
-export async function confirmCheckout(tx: Tx, checkoutId: string): Promise<FulfillmentResult> {
+export async function confirmCheckout(
+  tx: Tx,
+  checkoutId: string,
+  opts: { feePolicy?: FeePolicy; surcharge?: number } = {},
+): Promise<FulfillmentResult> {
   const [checkout] = await tx.select().from(orderCheckouts).where(eq(orderCheckouts.id, checkoutId)).for('update');
   if (!checkout) throw notFound('Checkout');
   if (checkout.status === 'paid') return { effects: [], duplicate: true };
@@ -208,11 +234,12 @@ export async function confirmCheckout(tx: Tx, checkoutId: string): Promise<Fulfi
     : [];
 
   for (const order of checkoutOrders) {
-    const split = pharmacySplit(order.subtotal, order.deliveryFee);
+    const split = pharmacySplit(order.subtotal, order.deliveryFee, opts.feePolicy);
     await tx
       .update(orders)
       .set({ status: 'pending', pharmacyEarning: split.pharmacyEarning, platformEarning: split.platformEarning })
       .where(eq(orders.id, order.id));
+    await recordOrderEvent(tx, order.id, 'pending', 'system', 'Payment confirmed · sent to the pharmacy');
   }
   for (const item of items) {
     if (!item.productId) continue;
@@ -225,15 +252,18 @@ export async function confirmCheckout(tx: Tx, checkoutId: string): Promise<Fulfi
   const effects: Effect[] = [
     await createNotification({ userId: checkout.userId, type: 'transaction', title: 'Your purchase was successful' }, tx),
     await payerPush(tx, checkout.userId, {
-      title: 'Payment confirmed',
-      body: 'Your order has been sent to the pharmacy.',
-      data: { type: 'transaction' },
+      title: 'Order placed',
+      body:
+        checkoutOrders.length > 1
+          ? `Your order was sent to ${checkoutOrders.length} pharmacies. We’ll update you as each one accepts it.`
+          : 'Your order was sent to the pharmacy. We’ll let you know as soon as they accept it.',
+      data: checkoutOrders.length === 1 ? { type: 'order', id: checkoutOrders[0]!.id } : { type: 'orders' },
     }),
     () => mailer.activity(checkout.userId, 'Order'),
   ];
 
   const [customer] = await tx
-    .select({ firstName: users.firstName, lastName: users.lastName })
+    .select({ firstName: users.firstName, lastName: users.lastName, email: users.email })
     .from(users)
     .where(eq(users.id, checkout.userId));
   const pharmacyRows = checkoutOrders.length
@@ -259,6 +289,32 @@ export async function confirmCheckout(tx: Tx, checkoutId: string): Promise<Fulfi
         customerName,
         items: lines,
         deliveryAddress: order.address,
+      }),
+    );
+  }
+
+  // Itemised receipt for the customer.
+  if (customer?.email) {
+    const surcharge = opts.surcharge ?? orderSurcharge(checkout.subtotal, opts.feePolicy);
+    effects.push(() =>
+      mailer.orderReceipt({
+        to: customer.email,
+        firstName: customer.firstName,
+        paidAt: new Date(),
+        address: checkoutOrders[0]?.address ?? null,
+        groups: checkoutOrders.map((order) => ({
+          pharmacyName: pharmacyById.get(order.pharmacyId)?.name ?? 'Pharmacy',
+          trackingId: order.trackingId,
+          lines: items
+            .filter((i) => i.orderId === order.id)
+            .map((i) => ({ name: i.name, quantity: i.quantity, amount: formatNaira(i.unitPrice * i.quantity) })),
+          subtotal: formatNaira(order.subtotal),
+          deliveryFee: formatNaira(order.deliveryFee),
+        })),
+        subtotal: formatNaira(checkout.subtotal),
+        deliveryFee: formatNaira(checkout.deliveryFee),
+        serviceCharge: formatNaira(surcharge),
+        total: formatNaira(checkout.totalAmount + surcharge),
       }),
     );
   }

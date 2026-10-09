@@ -23,7 +23,7 @@ if (existing) {
     phoneNumber: '+234 800 000 0000',
     address: 'Lagos, Nigeria',
     deliveryFeePerKm: 500,
-    status: 'active',
+    status: 'onboarding',
   });
 }
 await closeDatabase();

@@ -251,10 +251,13 @@ export function pharmacyNewOrder(input: {
 
 const ORDER_STATUS_COPY: Record<string, { label: string; message: string }> = {
   pending: { label: 'Order received', message: 'We have received your order and sent it to the pharmacy.' },
-  processing: { label: 'Being prepared', message: 'The pharmacy is preparing your order.' },
+  processing: { label: 'Order accepted', message: 'The pharmacy accepted your order and is preparing it now.' },
   delivering: { label: 'Out for delivery', message: 'Your order is on its way to you.' },
-  completed: { label: 'Delivered', message: 'Your order has been delivered. We hope you feel better soon.' },
-  cancelled: { label: 'Cancelled', message: 'Your order was cancelled. Contact support if you have any questions.' },
+  completed: {
+    label: 'Delivered',
+    message: 'Your order has been delivered. We hope you feel better soon — you can rate the pharmacy in the app.',
+  },
+  cancelled: { label: 'Cancelled', message: 'The pharmacy could not fulfil your order.' },
 };
 
 export function orderStatusUpdate(input: {
@@ -263,6 +266,9 @@ export function orderStatusUpdate(input: {
   status: string;
   items: OrderLine[];
   total: string;
+  pharmacyName?: string | null;
+  /** Extra context: ETA, rider details, cancellation reason and refund. */
+  note?: string | null;
 }): RenderedMail {
   const copy = ORDER_STATUS_COPY[input.status] ?? { label: input.status, message: 'Your order status has changed.' };
   const html = layout({
@@ -271,8 +277,10 @@ export function orderStatusUpdate(input: {
       heading(copy.label),
       paragraph(escapeHtml(greeting(input.firstName))),
       paragraph(escapeHtml(copy.message)),
+      ...(input.note ? [notice(escapeHtml(input.note), input.status === 'cancelled' ? 'warning' : 'info')] : []),
       detailsTable([
         ['Order', input.trackingId],
+        ...(input.pharmacyName ? ([['Pharmacy', input.pharmacyName]] as Array<[string, string]>) : []),
         ['Status', copy.label],
         ['Items', input.items.map((item) => `${item.name} × ${item.quantity}`).join(', ')],
         ['Total', input.total],
@@ -284,12 +292,157 @@ export function orderStatusUpdate(input: {
     greeting(input.firstName),
     '',
     copy.message,
+    input.note,
     `Order: ${input.trackingId}`,
+    input.pharmacyName ? `Pharmacy: ${input.pharmacyName}` : null,
     `Status: ${copy.label}`,
     `Items: ${input.items.map((item) => `${item.name} × ${item.quantity}`).join(', ')}`,
     `Total: ${input.total}`,
   ]);
   return { subject: `${copy.label} – order ${input.trackingId}`, html, text };
+}
+
+export interface ReceiptGroup {
+  pharmacyName: string;
+  trackingId: string;
+  lines: Array<{ name: string; quantity: number; amount: string }>;
+  subtotal: string;
+  deliveryFee: string;
+}
+
+/** Customer receipt sent once a pharmacy order is paid. */
+export function orderReceipt(input: {
+  firstName?: string | null;
+  paidAt: Date;
+  address?: string | null;
+  groups: ReceiptGroup[];
+  subtotal: string;
+  deliveryFee: string;
+  serviceCharge: string;
+  total: string;
+}): RenderedMail {
+  const cell = (html: string, opts = '') =>
+    `<td ${opts} style="padding:9px 16px;font-family:${BRAND.font};font-size:14px;color:${BRAND.ink};">${html}</td>`;
+  const groups = input.groups
+    .map(
+      (g) => `
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 16px;border:1px solid ${BRAND.border};border-radius:12px;border-collapse:separate;">
+        <tr><td colspan="2" style="padding:11px 16px;background:${BRAND.panel};border-radius:12px 12px 0 0;font-family:${BRAND.font};font-size:13px;font-weight:700;color:${BRAND.ink};">${escapeHtml(g.pharmacyName)} <span style="font-weight:400;color:${BRAND.muted};">· ${escapeHtml(g.trackingId)}</span></td></tr>
+        ${g.lines.map((l) => `<tr>${cell(`${escapeHtml(l.name)} &times; ${escapeHtml(l.quantity)}`)}${cell(escapeHtml(l.amount), 'align="right"')}</tr>`).join('')}
+        <tr>${cell(`<span style="color:${BRAND.muted};">Delivery</span>`)}${cell(escapeHtml(g.deliveryFee), 'align="right"')}</tr>
+      </table>`,
+    )
+    .join('');
+  const totals = detailsTable([
+    ['Medicines', input.subtotal],
+    ['Delivery', input.deliveryFee],
+    ['Service charge', input.serviceCharge],
+    ['Total paid', input.total],
+  ]);
+  const html = layout({
+    preheader: `Receipt for your order — ${input.total} paid.`,
+    body: [
+      heading('Thanks for your order'),
+      paragraph(escapeHtml(greeting(input.firstName))),
+      paragraph(
+        input.groups.length > 1
+          ? `Your order was sent to ${input.groups.length} pharmacies. Each one will deliver its items and you will get updates as they do.`
+          : 'Your order was sent to the pharmacy. You will get updates as it is prepared and delivered.',
+      ),
+      ...(input.address ? [detailsTable([['Delivering to', input.address]])] : []),
+      groups,
+      totals,
+      muted(`Paid ${escapeHtml(formatTime(input.paidAt))}. Keep this email as your receipt. Track your order in the Instant Doctor app.`),
+    ].join(''),
+  });
+  const text = plainText([
+    greeting(input.firstName),
+    '',
+    'Thanks for your order. Here is your receipt.',
+    input.address ? `Delivering to: ${input.address}` : null,
+    '',
+    ...input.groups.flatMap((g) => [
+      `${g.pharmacyName} (${g.trackingId})`,
+      ...g.lines.map((l) => `• ${l.name} × ${l.quantity} — ${l.amount}`),
+      `  Delivery: ${g.deliveryFee}`,
+      '',
+    ]),
+    `Medicines: ${input.subtotal}`,
+    `Delivery: ${input.deliveryFee}`,
+    `Service charge: ${input.serviceCharge}`,
+    `Total paid: ${input.total}`,
+  ]);
+  return { subject: `Your receipt – ${input.total} – ${BRAND.name}`, html, text };
+}
+
+const ISSUE_LABELS: Record<string, string> = {
+  missing_item: 'Missing item',
+  wrong_item: 'Wrong item',
+  damaged: 'Damaged item',
+  late: 'Late delivery',
+  not_delivered: 'Not delivered',
+  quality: 'Product quality',
+  other: 'Other',
+};
+export const issueLabel = (category: string) => ISSUE_LABELS[category] ?? 'Other';
+
+/** Tells a pharmacy a customer reported a problem with an order. */
+export function pharmacyOrderIssue(input: {
+  pharmacyName?: string | null;
+  trackingId: string;
+  customerName: string;
+  category: string;
+  message: string;
+}): RenderedMail {
+  const label = issueLabel(input.category);
+  const html = layout({
+    preheader: `${input.customerName} reported "${label}" on order ${input.trackingId}.`,
+    body: [
+      heading('A customer reported a problem'),
+      paragraph(escapeHtml(input.pharmacyName?.trim() ? `Hello ${input.pharmacyName.trim()},` : 'Hello,')),
+      paragraph('Please review it and respond from your pharmacy workspace — the customer is notified when you do.'),
+      detailsTable([
+        ['Order', input.trackingId],
+        ['Customer', input.customerName],
+        ['Problem', label],
+      ]),
+      notice(escapeHtml(input.message), 'warning'),
+    ].join(''),
+  });
+  const text = plainText([
+    'A customer reported a problem with an order.',
+    `Order: ${input.trackingId}`,
+    `Customer: ${input.customerName}`,
+    `Problem: ${label}`,
+    '',
+    input.message,
+  ]);
+  return { subject: `Problem reported on order ${input.trackingId}`, html, text };
+}
+
+/** Tells a pharmacy it received a review. */
+export function pharmacyNewReview(input: {
+  pharmacyName?: string | null;
+  trackingId: string;
+  rating: number;
+  comment?: string | null;
+}): RenderedMail {
+  const stars = '★'.repeat(input.rating) + '☆'.repeat(5 - input.rating);
+  const html = layout({
+    preheader: `New ${input.rating}-star review for order ${input.trackingId}.`,
+    body: [
+      heading('You received a review'),
+      paragraph(escapeHtml(input.pharmacyName?.trim() ? `Hello ${input.pharmacyName.trim()},` : 'Hello,')),
+      detailsTable([
+        ['Order', input.trackingId],
+        ['Rating', stars],
+      ]),
+      ...(input.comment ? [notice(escapeHtml(input.comment))] : []),
+      muted('You can reply publicly from the Reviews page of your workspace.'),
+    ].join(''),
+  });
+  const text = plainText([`New ${input.rating}-star review for order ${input.trackingId}.`, input.comment]);
+  return { subject: `New ${input.rating}-star review – ${BRAND.name}`, html, text };
 }
 
 export function opsActivity(input: {

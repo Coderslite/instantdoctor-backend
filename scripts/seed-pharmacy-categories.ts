@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { closeDatabase, db } from '../src/db/client.js';
+import { closeDatabase, databaseLabel, db } from '../src/db/client.js';
 import { productCategories } from '../src/db/schema/index.js';
 import { newId } from '../src/lib/ids.js';
 
@@ -75,13 +75,21 @@ const categories = [
 ];
 
 let created = 0;
-for (const name of categories) {
-  const [existing] = await db.select({ id: productCategories.id }).from(productCategories).where(eq(productCategories.name, name)).limit(1);
-  if (!existing) {
-    await db.insert(productCategories).values({ id: newId(), name });
-    created += 1;
+try {
+  let existingCount = 0;
+  for (const name of categories) {
+    const [existing] = await db.select({ id: productCategories.id }).from(productCategories).where(eq(productCategories.name, name)).limit(1);
+    if (existing) {
+      existingCount += 1;
+    } else {
+      await db.insert(productCategories).values({ id: newId(), name });
+      created += 1;
+    }
   }
-}
 
-process.stdout.write(`Pharmacy categories ready: ${categories.length} total, ${created} created.\n`);
-await closeDatabase();
+  process.stdout.write(
+    `Pharmacy categories ready in ${databaseLabel}: ${categories.length} total, ${created} created, ${existingCount} already present.\n`,
+  );
+} finally {
+  await closeDatabase();
+}

@@ -28,6 +28,8 @@ export const SETTINGS_KEYS = {
   productPrices: 'product_prices',
 } as const;
 
+const ADDITIONAL_CURRENCIES = ['USD', 'EUR', 'GBP'] as const;
+
 export async function getAppSettings(executor: Executor = db): Promise<AppSettings> {
   const [row] = await executor
     .select()
@@ -43,7 +45,14 @@ export async function getTrialDoctorId(executor: Executor = db): Promise<string>
 }
 
 export async function listCurrencies() {
-  return db.select({ code: currencies.code }).from(currencies).orderBy(currencies.code);
+  const rows = await db.select({ code: currencies.code }).from(currencies).orderBy(currencies.code);
+  return [...new Set([...rows.map(({ code }) => code.toUpperCase()), ...ADDITIONAL_CURRENCIES])]
+    .sort()
+    .map((code) => ({ code }));
+}
+
+export async function isListedCurrency(code: string) {
+  return (await listCurrencies()).some((currency) => currency.code === code.toUpperCase());
 }
 
 export async function getActiveVideoCallCredentials() {

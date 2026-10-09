@@ -15,6 +15,9 @@ export const id = customType<{ data: string; driverData: string }>({
 /** Monetary amount in major units (e.g. 6800.00 NGN, 9.99 USD). */
 export const money = (name: string) => decimal(name, { precision: 14, scale: 2, mode: 'number' });
 
+/** FX multiplier with enough precision for currencies with very small USD rates. */
+export const exchangeRate = (name: string) => decimal(name, { precision: 18, scale: 8, mode: 'number' });
+
 /** Latitude/longitude with ~1cm precision. */
 export const coordinate = (name: string) =>
   decimal(name, { precision: 10, scale: 7, mode: 'number' });

@@ -49,6 +49,10 @@ adminRouter.post('/auth/logout', async (req, res) => {
 
 adminRouter.use(authenticateAdmin);
 adminRouter.get('/dashboard', async (_req, res) => res.json(await service.dashboard()));
+adminRouter.get('/commercial-fees', async (_req, res) => res.json({ fees: await service.getCommercialFees() }));
+adminRouter.put('/commercial-fees', requireAdminRole('admin'), async (req, res) =>
+  res.json(await service.updateCommercialFees(parse(schemas.commercialFeesSchema, req.body))),
+);
 adminRouter.get('/patients', async (req, res) =>
   res.json(await service.listUsers('user', parse(schemas.adminListQuery, req.query))),
 );

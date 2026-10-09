@@ -16,6 +16,7 @@ import { alias } from 'drizzle-orm/mysql-core';
 import { db } from '../../db/client.js';
 import {
   admins,
+  appSettings,
   appointmentPackages,
   appointments,
   doctorProfiles,
@@ -30,6 +31,8 @@ import {
   userMedicalProfiles,
   users,
 } from '../../db/schema/index.js';
+import { isListedCurrency } from '../settings/settings.service.js';
+import { usdRate } from '../../integrations/exchange-rates.js';
 import { hashPassword, verifyPassword } from '../../lib/crypto.js';
 import { badRequest, notFound, unauthorized } from '../../lib/errors.js';
 import { signAdminAccessToken } from '../../lib/tokens.js';
@@ -44,6 +47,7 @@ import { deliver } from '../../integrations/mail/transport.js';
 import { escapeHtml, layout, paragraph, plainText } from '../../integrations/mail/layout.js';
 import { sendPush } from '../../integrations/push.js';
 import { createNotification } from '../notifications/notifications.service.js';
+import { COMMERCIAL_FEES_SETTINGS_KEY, getFeePolicy, type FeePolicy } from '../pricing/fees.js';
 
 type ListQuery = { search?: string; status?: string; limit: number; offset: number };
 const patient = alias(users, 'patient');
@@ -51,6 +55,16 @@ const doctor = alias(users, 'doctor');
 const fullName = (first: SQLWrapper, last: SQLWrapper) =>
   sql<string>`concat(${first}, ' ', ${last})`;
 const searchTerm = (value?: string) => (value ? `%${value}%` : undefined);
+
+export const getCommercialFees = () => getFeePolicy();
+
+export async function updateCommercialFees(fees: FeePolicy) {
+  await db
+    .insert(appSettings)
+    .values({ key: COMMERCIAL_FEES_SETTINGS_KEY, value: fees })
+    .onDuplicateKeyUpdate({ set: { value: fees } });
+  return { fees: await getFeePolicy() };
+}
 
 const adminSession = (
   admin: Pick<typeof admins.$inferSelect, 'id' | 'role'>,
@@ -389,6 +403,7 @@ export async function getDoctor(id: string) {
       country: users.country,
       address: users.address,
       currency: users.currency,
+      earningCurrency: users.earningCurrency,
       accountStatus: users.accountStatus,
       presence: users.presence,
       lastSeenAt: users.lastSeenAt,
@@ -465,6 +480,7 @@ type DoctorUpdate = {
   country?: string | null;
   address?: string | null;
   currency?: string | null;
+  earningCurrency?: string;
   specialization?: string | null;
   experienceYears?: number | null;
   bio?: string | null;
@@ -496,6 +512,7 @@ export async function updateDoctor(id: string, input: DoctorUpdate) {
     workAddress,
     homeAddress,
     certificateUrl,
+    earningCurrency,
     ...userInput
   } = input;
   const profileInput = {
@@ -511,9 +528,21 @@ export async function updateDoctor(id: string, input: DoctorUpdate) {
     homeAddress,
     certificateUrl,
   };
+  if (earningCurrency !== undefined) {
+    if (!(await isListedCurrency(earningCurrency))) {
+      throw badRequest('Choose a supported earning currency', [
+        { path: 'earningCurrency', message: 'unsupported' },
+      ]);
+    }
+    await usdRate(earningCurrency);
+  }
   await db.transaction(async (tx) => {
-    if (Object.values(userInput).some((value) => value !== undefined))
-      await tx.update(users).set(userInput).where(eq(users.id, id));
+    const userPatch = {
+      ...userInput,
+      ...(earningCurrency !== undefined && { earningCurrency }),
+    };
+    if (Object.values(userPatch).some((value) => value !== undefined))
+      await tx.update(users).set(userPatch).where(eq(users.id, id));
     if (Object.values(profileInput).some((value) => value !== undefined))
       await tx
         .insert(doctorProfiles)

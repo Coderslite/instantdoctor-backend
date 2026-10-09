@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { primeRates } from '../../src/integrations/exchange-rates.js';
 import { quoteFromUsd, resolveRegion, roundUpForCurrency } from '../../src/modules/pricing/pricing.service.js';
-import { doctorEarning, orderSurcharge, pharmacySplit, referralCommission } from '../../src/modules/pricing/fees.js';
+import { DEFAULT_FEE_POLICY, doctorEarning, orderSurcharge, pharmacySplit, referralCommission } from '../../src/modules/pricing/fees.js';
 
 describe('roundUpForCurrency', () => {
   it.each([
@@ -54,4 +54,28 @@ describe('fees', () => {
     expect(pharmacySplit(10_000, 500)).toEqual({ pharmacyEarning: 10_000, platformEarning: 500 });
   });
   it('pays 10% referral commission', () => expect(referralCommission(6800)).toBe(680));
+  it('uses an administrator-managed policy for new calculations', () => {
+    const policy = {
+      ...DEFAULT_FEE_POLICY,
+      gatewayFeePercent: 2,
+      orderSurchargePercent: 3,
+      consultationPlatformPercent: 25,
+      pharmacyPlatformPercent: 8,
+      referralCommissionPercent: 15,
+    };
+    expect(orderSurcharge(5000, policy)).toBe(250);
+    expect(doctorEarning(1000, policy)).toBe(730);
+    expect(pharmacySplit(10_000, 500, policy)).toEqual({
+      pharmacyEarning: 9700,
+      platformEarning: 800,
+    });
+    expect(referralCommission(6800, policy)).toBe(1020);
+    expect(
+      doctorEarning(0.01, {
+        ...policy,
+        gatewayFeePercent: 50,
+        consultationPlatformPercent: 50,
+      }),
+    ).toBe(0);
+  });
 });
