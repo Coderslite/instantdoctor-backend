@@ -8,7 +8,8 @@ export type FileVisibility = (typeof FILE_VISIBILITIES)[number];
 export const FILE_STATUSES = ['pending', 'ready'] as const;
 export type FileStatus = (typeof FILE_STATUSES)[number];
 
-export const FILE_OWNER_TYPES = ['user', 'admin', 'pharmacy'] as const;
+/** `applicant`: documents from a website provider application (no account yet). */
+export const FILE_OWNER_TYPES = ['user', 'admin', 'pharmacy', 'applicant'] as const;
 export type FileOwnerType = (typeof FILE_OWNER_TYPES)[number];
 
 export const files = mysqlTable(

@@ -1,6 +1,6 @@
 import type { FileVisibility } from '../../db/schema/files.js';
 
-export type UploaderKind = 'patient' | 'doctor' | 'admin' | 'pharmacy';
+export type UploaderKind = 'patient' | 'doctor' | 'admin' | 'pharmacy' | 'applicant';
 
 const WEB_IMAGES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const PHOTOS = [...WEB_IMAGES, 'image/heic', 'image/heif'];
@@ -62,7 +62,7 @@ export const FILE_POLICIES = {
     visibility: 'private',
     contentTypes: [...PHOTOS, ...PDF],
     maxBytes: 10 * MB,
-    uploaders: ['doctor', 'admin'],
+    uploaders: ['doctor', 'admin', 'applicant'],
     description: 'Licence, certificate or ID for doctor verification',
   },
   lab_result_report: {

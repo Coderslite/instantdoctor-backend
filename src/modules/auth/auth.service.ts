@@ -4,6 +4,7 @@ import { env } from '../../config/env.js';
 import { db, type Executor } from '../../db/client.js';
 import {
   authIdentities,
+  doctorApplications,
   otpCodes,
   passwordResetTokens,
   referrals,
@@ -187,7 +188,7 @@ export async function isEmailAvailable(email: string) {
 }
 
 /** Referral tag: first two letters of the first name + 8 digits (time-derived + random). */
-function generateTag(firstName: string): string {
+export function generateTag(firstName: string): string {
   const prefix = (firstName.toLowerCase().replace(/[^a-z]/g, '') + 'xx').slice(0, 2);
   return `${prefix}${String(Date.now()).slice(-7)}${randomInt(0, 10)}`;
 }
@@ -362,9 +363,27 @@ export async function resendRegistrationCode(email: string) {
 }
 
 
+/**
+ * Applicants sign in to the doctor app with the password they chose on the
+ * website, so tell them (only once the password matches) why it doesn't work yet.
+ */
+async function unapprovedApplicationError(email: string, password: string) {
+  const [application] = await db
+    .select({ status: doctorApplications.status, passwordHash: doctorApplications.passwordHash })
+    .from(doctorApplications)
+    .where(eq(doctorApplications.email, email.toLowerCase()))
+    .orderBy(desc(doctorApplications.createdAt))
+    .limit(1);
+  if (!application || application.status === 'approved') return null;
+  if (!(await verifyPassword(password, application.passwordHash))) return null;
+  return application.status === 'pending'
+    ? forbidden('Your provider application is still under review. We will email you as soon as it is approved.', 'APPLICATION_PENDING')
+    : forbidden('Your provider application was not approved. Please check your email for details.', 'APPLICATION_REJECTED');
+}
+
 export async function login(email: string, password: string, client?: ClientInfo) {
   const user = await findUserByEmail(email);
-  if (!user) throw unauthorized('Invalid email or password');
+  if (!user) throw (await unapprovedApplicationError(email, password)) ?? unauthorized('Invalid email or password');
 
   let ok = user.passwordHash ? await verifyPassword(password, user.passwordHash) : false;
   if (!ok && user.legacyAuth) {

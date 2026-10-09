@@ -26,6 +26,7 @@ import { FILE_POLICIES, FILE_PURPOSES } from '../modules/files/file-policies.js'
 import { presignUploadSchema, uploadDocSchema } from '../modules/files/files.schemas.js';
 import { certificateSchema } from '../modules/doctors/doctors.schemas.js';
 import * as users from '../modules/users/users.schemas.js';
+import { submitApplicationSchema } from '../modules/doctor-applications/doctor-applications.schemas.js';
 import { joinWaitlistSchema, waitlistStatusQuery } from '../modules/waitlist/waitlist.schemas.js';
 import { listTransactionsQuery, transferSchema } from '../modules/wallet/wallet.schemas.js';
 import * as c from './components.js';
@@ -1242,6 +1243,28 @@ op('post', '/notifications/read-all', {
   tag: 'Notifications',
   summary: 'Mark all notifications as read',
   ok: { 204: null },
+});
+op('post', '/doctor-applications/documents', {
+  tag: 'Provider applications',
+  summary: 'Upload one document for a provider application (no account needed)',
+  description:
+    'Used by the website\'s "Become a provider" form. multipart/form-data with `file` (PDF, JPEG, PNG, WebP or HEIC, up to 10 MB). Send the returned `id` in `documents[].fileId` when submitting. Documents not attached to an application within 24 hours are deleted.',
+  auth: false,
+  body: { multipart: z.object({ file: z.string().meta({ format: 'binary' }) }) },
+  ok: { 201: z.object({ id: z.string(), name: z.string().nullable(), contentType: z.string(), size: z.number() }) },
+  errors: { 422: 'UNSUPPORTED_FILE_TYPE | FILE_TOO_LARGE' },
+});
+op('post', '/doctor-applications', {
+  tag: 'Provider applications',
+  summary: 'Apply to join as a provider',
+  description:
+    'Creates a pending application. Required documents: practising_licence, registration_certificate, medical_degree, government_id, headshot, cv. When an admin approves it, a doctor account is created with this email and password and the applicant is emailed how to sign in to the doctor app.',
+  auth: false,
+  body: submitApplicationSchema,
+  ok: { 201: z.object({ id: z.string(), reference: z.string(), status: z.literal('pending'), email: z.string() }) },
+  errors: {
+    409: 'EMAIL_TAKEN — an account already uses this email | APPLICATION_EXISTS — an application for this email is under review',
+  },
 });
 op('post', '/waitlist', {
   tag: 'Misc',

@@ -50,6 +50,18 @@ export const mailer = {
   appointmentUpdate: (input: { to: string } & templates.AppointmentEmailInput) =>
     send(input.to, `appointment-${input.event}`, templates.appointmentUpdate(input)),
 
+  doctorApplicationReceived: (input: { to: string; firstName: string; reference: string }) =>
+    send(input.to, 'doctor-application-received', templates.doctorApplicationReceived(input)),
+
+  doctorApplicationApproved: (input: { to: string; firstName: string }) =>
+    send(input.to, 'doctor-application-approved', templates.doctorApplicationApproved({ ...input, email: input.to })),
+
+  doctorApplicationRejected: (input: { to: string; firstName: string; reason?: string | null }) =>
+    send(input.to, 'doctor-application-rejected', templates.doctorApplicationRejected(input)),
+
+  opsDoctorApplication: (input: Parameters<typeof templates.opsDoctorApplication>[0]) =>
+    send(env.OPS_EMAIL, 'ops-doctor-application', templates.opsDoctorApplication(input)),
+
   async activity(userId: string, activity: string) {
     try {
       const [user] = await db

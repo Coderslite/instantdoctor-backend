@@ -26,7 +26,13 @@ type FileRow = typeof files.$inferSelect;
 export const FILE_REF_PREFIX = 'file:';
 
 const ownerType = (kind: UploaderKind): FileOwnerType =>
-  kind === 'admin' ? 'admin' : kind === 'pharmacy' ? 'pharmacy' : 'user';
+  kind === 'admin' || kind === 'pharmacy' || kind === 'applicant' ? kind : 'user';
+
+/**
+ * Owner id of an applicant's document until an application claims it. Claiming
+ * sets the owner to the application, and approval hands it to the new doctor.
+ */
+export const UNCLAIMED_APPLICANT_FILE = 'unclaimed';
 
 const isFileRef = (value: string | null | undefined): value is string =>
   typeof value === 'string' && value.startsWith(FILE_REF_PREFIX);
@@ -251,6 +257,36 @@ export async function purgeAbandonedUploads(olderThanMs = 24 * 60 * 60 * 1000): 
       .remove(row.storageKey, row.visibility)
       .catch((err: unknown) =>
         logger.warn({ err, fileId: row.id }, 'Could not remove abandoned upload'),
+      );
+  }
+  if (stale.length)
+    await db.delete(files).where(
+      inArray(
+        files.id,
+        stale.map((row) => row.id),
+      ),
+    );
+  return stale.length;
+}
+
+/** Deletes applicant documents that no application claimed within a day (abandoned forms). */
+export async function purgeUnclaimedApplicantFiles(olderThanMs = 24 * 60 * 60 * 1000): Promise<number> {
+  const stale = await db
+    .select()
+    .from(files)
+    .where(
+      and(
+        eq(files.ownerType, 'applicant'),
+        eq(files.ownerId, UNCLAIMED_APPLICANT_FILE),
+        lt(files.createdAt, new Date(Date.now() - olderThanMs)),
+      ),
+    )
+    .limit(500);
+  for (const row of stale) {
+    await storage()
+      .remove(row.storageKey, row.visibility)
+      .catch((err: unknown) =>
+        logger.warn({ err, fileId: row.id }, 'Could not remove unclaimed applicant file'),
       );
   }
   if (stale.length)

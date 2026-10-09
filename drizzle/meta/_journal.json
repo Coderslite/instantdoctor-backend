@@ -169,6 +169,13 @@
       "when": 1791570000000,
       "tag": "0023_doctor_earning_currency",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "5",
+      "when": 1791580000000,
+      "tag": "0024_doctor_applications",
+      "breakpoints": true
     }
   ]
 }

@@ -10,7 +10,7 @@ export const app = createApp();
 export const api = () => request(app);
 
 const TABLES = [
-  'idempotency_keys', 'files', 'payment_webhook_events', 'payments', 'wallet_transactions', 'notifications',
+  'idempotency_keys', 'doctor_applications', 'files', 'payment_webhook_events', 'payments', 'wallet_transactions', 'notifications',
   'referrals', 'reviews', 'prescriptions', 'appointment_messages', 'report_messages', 'reports',
   'appointments', 'appointment_packages', 'order_events', 'order_issues', 'pharmacy_reviews', 'inventory_movements', 'purchase_order_items', 'purchase_orders', 'suppliers', 'order_items', 'orders', 'order_checkouts', 'products',
   'pharmacy_staff', 'pharmacies', 'lab_result_files', 'lab_results', 'care_summary_shares', 'family_subscriptions', 'vital_readings', 'care_plans',

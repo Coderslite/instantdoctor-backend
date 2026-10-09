@@ -4,7 +4,7 @@ import { closeDatabase, databaseLabel } from './db/client.js';
 import { createApp } from './app.js';
 import { logger } from './lib/logger.js';
 import { purgeExpiredIdempotencyKeys } from './middleware/idempotency.js';
-import { purgeAbandonedUploads } from './modules/files/files.service.js';
+import { purgeAbandonedUploads, purgeUnclaimedApplicantFiles } from './modules/files/files.service.js';
 import { reconcilePendingPayments } from './modules/payments/payments.service.js';
 import { closeRealtime, initRealtime } from './realtime/gateway.js';
 
@@ -27,6 +27,9 @@ const housekeeping = setInterval(
     purgeAbandonedUploads()
       .then((n) => n > 0 && logger.info({ purged: n }, 'Abandoned uploads purged'))
       .catch((err: unknown) => logger.error({ err }, 'Upload purge failed'));
+    purgeUnclaimedApplicantFiles()
+      .then((n) => n > 0 && logger.info({ purged: n }, 'Unclaimed applicant documents purged'))
+      .catch((err: unknown) => logger.error({ err }, 'Applicant document purge failed'));
   },
   60 * 60 * 1000,
 );

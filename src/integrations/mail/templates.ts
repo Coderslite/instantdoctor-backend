@@ -572,3 +572,147 @@ export function appointmentUpdate(input: AppointmentEmailInput): RenderedMail {
   ]);
   return { subject: c.subject, html, text };
 }
+
+// ─── Provider applications ───────────────────────────────────────────────────
+
+const numberedSteps = (steps: Array<[string, string]>) =>
+  `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 20px;">${steps
+    .map(
+      ([title, description], i) => `
+    <tr>
+      <td style="padding:0 0 14px;vertical-align:top;width:34px;">
+        <div style="width:24px;height:24px;border-radius:12px;background:#E0F5FD;text-align:center;font-family:${BRAND.font};font-size:12px;line-height:24px;font-weight:700;color:${BRAND.deep};">${i + 1}</div>
+      </td>
+      <td style="padding:2px 0 14px;font-family:${BRAND.font};font-size:14px;line-height:21px;color:${BRAND.body};">
+        <strong style="color:${BRAND.ink};">${escapeHtml(title)}</strong><br>${description}
+      </td>
+    </tr>`,
+    )
+    .join('')}</table>`;
+
+export function doctorApplicationReceived(input: { firstName: string; reference: string }): RenderedMail {
+  const html = layout({
+    preheader: 'We have your application and will review it within 3–5 working days.',
+    body: [
+      heading('We received your application'),
+      paragraph(escapeHtml(greeting(input.firstName))),
+      paragraph(
+        `Thank you for applying to join ${escapeHtml(BRAND.name)} as a provider. Our clinical team will check your details and documents, and we will email you as soon as a decision is made, usually within <strong>3–5 working days</strong>.`,
+      ),
+      detailsTable([
+        ['Application reference', input.reference],
+        ['Status', 'Under review'],
+      ]),
+      notice(
+        'Keep the password you created safe. Once you are approved you will use it, with this email address, to sign in to the Instant Doctor for Doctors app.',
+      ),
+      muted('If we need anything else from you, we will reply to this email address.'),
+    ].join(''),
+  });
+  const text = plainText([
+    greeting(input.firstName),
+    '',
+    `Thank you for applying to join ${BRAND.name} as a provider. Our clinical team will check your details and documents, and we will email you when a decision is made, usually within 3–5 working days.`,
+    '',
+    `Application reference: ${input.reference}`,
+    '',
+    'Keep the password you created safe. Once approved, you will use it with this email address to sign in to the Instant Doctor for Doctors app.',
+  ]);
+  return { subject: `We received your ${BRAND.name} provider application`, html, text };
+}
+
+export function doctorApplicationApproved(input: { firstName: string; email: string }): RenderedMail {
+  const stores = [
+    `<a href="${escapeHtml(env.DOCTOR_APP_PLAY_STORE_URL)}" style="color:${BRAND.deep};font-weight:600;">Google Play</a>`,
+    env.DOCTOR_APP_STORE_URL && `<a href="${escapeHtml(env.DOCTOR_APP_STORE_URL)}" style="color:${BRAND.deep};font-weight:600;">App Store</a>`,
+  ].filter(Boolean);
+  const steps: Array<[string, string]> = [
+    ['Download the doctor app', `Install <strong>Instant Doctor for Doctors</strong> from ${stores.join(' or ')}.`],
+    [
+      'Sign in',
+      `Use <strong>${escapeHtml(input.email)}</strong> and the password you created when you applied. Forgot it? Tap “Forgot password” on the sign-in screen.`,
+    ],
+    ['Secure the app', 'Set a 4-digit PIN so only you can open your consultations.'],
+    ['Finish your profile', 'Add your working hours and payout account, then switch yourself to available to start receiving patients.'],
+  ];
+  const html = layout({
+    preheader: 'Your application was approved. Download the doctor app and sign in to get started.',
+    body: [
+      heading(`Welcome to ${BRAND.name}, Dr. ${input.firstName}`),
+      paragraph(escapeHtml(greeting(input.firstName))),
+      paragraph('Good news: your provider application has been <strong>approved</strong> and your doctor account is ready. Here is how to get started:'),
+      numberedSteps(steps),
+      button('Download the doctor app', env.DOCTOR_APP_PLAY_STORE_URL),
+      muted('Questions about onboarding? Reply to this email and our provider team will help.'),
+    ].join(''),
+  });
+  const text = plainText([
+    greeting(input.firstName),
+    '',
+    'Your provider application has been approved and your doctor account is ready. To get started:',
+    '',
+    `1. Download Instant Doctor for Doctors: ${[env.DOCTOR_APP_PLAY_STORE_URL, env.DOCTOR_APP_STORE_URL].filter(Boolean).join(' or ')}`,
+    `2. Sign in with ${input.email} and the password you created when you applied.`,
+    '3. Set a 4-digit PIN to secure the app.',
+    '4. Add your working hours and payout account, then switch yourself to available.',
+  ]);
+  return { subject: `You're approved: welcome to ${BRAND.name}`, html, text };
+}
+
+export function doctorApplicationRejected(input: { firstName: string; reason?: string | null }): RenderedMail {
+  const html = layout({
+    preheader: 'An update on your Instant Doctor provider application.',
+    body: [
+      heading('An update on your application'),
+      paragraph(escapeHtml(greeting(input.firstName))),
+      paragraph(
+        `Thank you for your interest in joining ${escapeHtml(BRAND.name)}. After reviewing your application, we are unable to approve it at this time.`,
+      ),
+      input.reason ? notice(`<strong>Reviewer note:</strong> ${escapeHtml(input.reason)}`) : '',
+      paragraph(
+        `If you can address this, you are welcome to apply again at <a href="${escapeHtml(`${env.WEBSITE_URL}/become-a-provider`)}" style="color:${BRAND.deep};">${escapeHtml(env.WEBSITE_URL.replace(/^https?:\/\//, ''))}/become-a-provider</a>.`,
+      ),
+    ].join(''),
+  });
+  const text = plainText([
+    greeting(input.firstName),
+    '',
+    `Thank you for your interest in joining ${BRAND.name}. After reviewing your application, we are unable to approve it at this time.`,
+    input.reason ? `\nReviewer note: ${input.reason}` : null,
+    '',
+    `If you can address this, you are welcome to apply again at ${env.WEBSITE_URL}/become-a-provider`,
+  ]);
+  return { subject: `Your ${BRAND.name} provider application`, html, text };
+}
+
+export function opsDoctorApplication(input: {
+  id: string;
+  name: string;
+  email: string;
+  phoneNumber: string;
+  specialization: string;
+  country: string;
+  at: Date;
+}): RenderedMail {
+  const rows: Array<[string, string]> = [
+    ['Applicant', input.name],
+    ['Email', input.email],
+    ['Phone', input.phoneNumber],
+    ['Specialty', input.specialization],
+    ['Country', input.country],
+    ['Submitted', formatTime(input.at)],
+  ];
+  const link = `${env.ADMIN_URL.replace(/\/$/, '')}/doctors/applications/${input.id}`;
+  const html = layout({
+    preheader: `${input.name} applied to join as a provider`,
+    body: [
+      heading('New provider application'),
+      paragraph('A doctor has applied to join Instant Doctor and is waiting for review.'),
+      detailsTable(rows),
+      button('Review application', link),
+    ].join(''),
+    footerNote: 'Internal notification for the Instant Doctor operations team.',
+  });
+  const text = plainText(['New provider application', ...rows.map(([label, value]) => `${label}: ${value}`), '', `Review: ${link}`]);
+  return { subject: `[Provider application] ${input.name} – ${input.specialization}`, html, text };
+}
