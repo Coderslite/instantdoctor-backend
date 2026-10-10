@@ -8,6 +8,7 @@ import { PAYMENT_PROVIDERS } from '../db/schema/index.js';
 import { paginationQuery } from '../lib/pagination.js';
 import { askQuestionSchema } from '../modules/anonymous/anonymous.schemas.js';
 import * as blog from '../modules/blog/blog.schemas.js';
+import * as mailCenter from '../modules/mail-center/mail-center.schemas.js';
 import * as appointments from '../modules/appointments/appointments.schemas.js';
 import * as auth from '../modules/auth/auth.schemas.js';
 import { listDoctorsQuery } from '../modules/doctors/doctors.schemas.js';
@@ -899,7 +900,9 @@ op('post', '/care-plans/:id/readings', {
 // ─── Family care ─────────────────────────────────────────────────────────────
 
 const shareIdParam = z.object({ id: z.string() });
-const tokenParam = z.object({ token: z.string().meta({ description: 'Share token from the link' }) });
+const tokenParam = z.object({
+  token: z.string().meta({ description: 'Share token from the link' }),
+});
 
 op('get', '/family-profiles', {
   tag: 'Family',
@@ -970,7 +973,8 @@ op('get', '/care-summary/shares', {
 op('post', '/care-summary/shares', {
   tag: 'Family',
   summary: 'Create a read-only share link',
-  description: 'The returned `url` contains the token and is shown only once. Links expire and can be revoked.',
+  description:
+    'The returned `url` contains the token and is shown only once. Links expire and can be revoked.',
   body: family.createShareSchema,
   ok: { 201: c.CareSummaryShare.extend({ url: z.string() }) },
 });
@@ -984,11 +988,16 @@ op('delete', '/care-summary/shares/:id', {
 op('get', '/care-summaries/:token', {
   tag: 'Family',
   summary: 'View a shared care summary',
-  description: 'Public. Browsers (`Accept: text/html`) get a print-friendly page; API clients get JSON.',
+  description:
+    'Public. Browsers (`Accept: text/html`) get a print-friendly page; API clients get JSON.',
   auth: false,
   params: tokenParam,
   ok: {
-    200: z.object({ summary: c.CareSummary, sharedBy: z.string().nullable(), expiresAt: z.iso.datetime() }),
+    200: z.object({
+      summary: c.CareSummary,
+      sharedBy: z.string().nullable(),
+      expiresAt: z.iso.datetime(),
+    }),
   },
   errors: { 404: 'NOT_FOUND — unknown, expired or revoked link' },
 });
@@ -1226,6 +1235,91 @@ op('post', '/admin/blog/uploads', {
   errors: { ...adminWrite, 502: 'STORAGE_ERROR — upload to storage failed; retry' },
 });
 
+// ─── Mail centre (admin) ─────────────────────────────────────────────────────
+
+const LETTER = `Official letters on the Instant Doctor letterhead, sent from \`MAIL_OFFICIAL_FROM\` (contact@). Each recipient gets their own message; \`{{firstName}}\`, \`{{name}}\` and \`{{email}}\` in the body are filled in per person. Requires an **admin** token; sending needs the \`admin\` or \`marketer\` role.`;
+const LetterRecipient = z.object({
+  email: z.string(),
+  name: z.string().nullable(),
+  status: z.enum(['pending', 'sent', 'failed']),
+  error: z.string().nullable(),
+  sentAt: z.string().nullable(),
+});
+const LetterSummary = z.object({
+  id: z.string(),
+  reference: z.string().meta({ example: 'ID/2026/10/0007' }),
+  subject: z.string(),
+  status: z.enum(['sending', 'sent', 'partial', 'failed']),
+  audience: z.object({
+    segment: z.string().nullable(),
+    emails: z.number().int(),
+    users: z.number().int(),
+  }),
+  recipientCount: z.number().int(),
+  sentCount: z.number().int(),
+  failedCount: z.number().int(),
+  createdAt: z.string(),
+  sentBy: z.string().nullable(),
+});
+const LetterDetail = LetterSummary.extend({
+  body: z.string(),
+  signatureName: z.string(),
+  signatureTitle: z.string().nullable(),
+  recipients: z.array(LetterRecipient),
+});
+op('post', '/admin/mail/preview', {
+  tag: 'Mail centre',
+  summary: 'Render a letter as recipients will see it',
+  description: LETTER,
+  body: mailCenter.previewSchema,
+  ok: { 200: z.object({ html: z.string() }) },
+});
+op('get', '/admin/mail/audience', {
+  tag: 'Mail centre',
+  summary: 'How many people a segment reaches',
+  description: 'Counts active, non-suspended accounts.',
+  query: mailCenter.audienceQuery,
+  ok: { 200: z.object({ segment: z.string(), recipients: z.number().int() }) },
+});
+op('post', '/admin/mail/test', {
+  tag: 'Mail centre',
+  summary: 'Send the letter to myself',
+  description: LETTER,
+  body: mailCenter.testSchema,
+  ok: { 200: z.object({ sentTo: z.string() }) },
+  errors: { 403: 'FORBIDDEN', 422: 'MAIL_FAILED' },
+});
+op('post', '/admin/mail', {
+  tag: 'Mail centre',
+  summary: 'Send a letter',
+  description: `${LETTER}\n\nRecipients are the union of \`emails\`, \`userIds\` and \`segment\`, de-duplicated by address (max ${mailCenter.MAX_RECIPIENTS}). Returns at once with status \`sending\`; poll \`GET /admin/mail/{id}\` for progress.`,
+  body: mailCenter.sendSchema,
+  ok: { 202: LetterDetail },
+  errors: { 403: 'FORBIDDEN', 422: 'NO_RECIPIENTS | TOO_MANY_RECIPIENTS' },
+});
+op('get', '/admin/mail', {
+  tag: 'Mail centre',
+  summary: 'Sent letters, newest first',
+  description: LETTER,
+  query: mailCenter.historyQuery,
+  ok: {
+    200: z.object({
+      items: z.array(LetterSummary),
+      total: z.number().int(),
+      limit: z.number().int(),
+      offset: z.number().int(),
+    }),
+  },
+});
+op('get', '/admin/mail/:id', {
+  tag: 'Mail centre',
+  summary: 'A sent letter with per-recipient delivery status',
+  description: LETTER,
+  params: idParam,
+  ok: { 200: LetterDetail },
+  errors: { 404: 'NOT_FOUND' },
+});
+
 // ─── Misc ────────────────────────────────────────────────────────────────────
 
 op('get', '/notifications', {
@@ -1251,7 +1345,14 @@ op('post', '/doctor-applications/documents', {
     'Used by the website\'s "Become a provider" form. multipart/form-data with `file` (PDF, JPEG, PNG, WebP or HEIC, up to 10 MB). Send the returned `id` in `documents[].fileId` when submitting. Documents not attached to an application within 24 hours are deleted.',
   auth: false,
   body: { multipart: z.object({ file: z.string().meta({ format: 'binary' }) }) },
-  ok: { 201: z.object({ id: z.string(), name: z.string().nullable(), contentType: z.string(), size: z.number() }) },
+  ok: {
+    201: z.object({
+      id: z.string(),
+      name: z.string().nullable(),
+      contentType: z.string(),
+      size: z.number(),
+    }),
+  },
   errors: { 422: 'UNSUPPORTED_FILE_TYPE | FILE_TOO_LARGE' },
 });
 op('post', '/doctor-applications', {
@@ -1261,7 +1362,14 @@ op('post', '/doctor-applications', {
     'Creates a pending application. Required documents: practising_licence, registration_certificate, medical_degree, government_id, headshot, cv. When an admin approves it, a doctor account is created with this email and password and the applicant is emailed how to sign in to the doctor app.',
   auth: false,
   body: submitApplicationSchema,
-  ok: { 201: z.object({ id: z.string(), reference: z.string(), status: z.literal('pending'), email: z.string() }) },
+  ok: {
+    201: z.object({
+      id: z.string(),
+      reference: z.string(),
+      status: z.literal('pending'),
+      email: z.string(),
+    }),
+  },
   errors: {
     409: 'EMAIL_TAKEN — an account already uses this email | APPLICATION_EXISTS — an application for this email is under review',
   },
@@ -1312,7 +1420,8 @@ op('get', '/admin/commercial-fees', {
 op('put', '/admin/commercial-fees', {
   tag: 'Admin',
   summary: 'Update the commercial fee policy',
-  description: 'Requires an administrator role. The values affect new payment calculations; rates stored with a payment are retained for settlement.',
+  description:
+    'Requires an administrator role. The values affect new payment calculations; rates stored with a payment are retained for settlement.',
   body: feePolicyInputSchema,
   ok: { 200: z.object({ fees: c.CommercialFees }) },
   errors: { 403: 'FORBIDDEN — requires the administrator role' },
@@ -1381,7 +1490,8 @@ op('get', '/pharmacy-portal/staff', {
 op('post', '/pharmacy-portal/staff', {
   tag: 'Pharmacy portal',
   summary: 'Create a staff account with a temporary password',
-  description: 'Owner-only. Staff sign in with the supplied email and temporary password and must change that password before using the workspace.',
+  description:
+    'Owner-only. Staff sign in with the supplied email and temporary password and must change that password before using the workspace.',
   body: pharmacyPortal.staffSchema,
   ok: {
     201: z.object({

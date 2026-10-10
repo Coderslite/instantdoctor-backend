@@ -8,6 +8,9 @@ export interface OutgoingMail {
   html: string;
   text: string;
   category: string;
+  /** Overrides MAIL_FROM / MAIL_REPLY_TO (e.g. official letters from contact@). */
+  from?: string;
+  replyTo?: string;
 }
 
 export type MailSink = (mail: OutgoingMail) => Promise<void>;
@@ -28,8 +31,8 @@ function smtp(): Transporter {
 
 const smtpSink: MailSink = async (mail) => {
   await smtp().sendMail({
-    from: env.MAIL_FROM,
-    replyTo: env.MAIL_REPLY_TO,
+    from: mail.from ?? env.MAIL_FROM,
+    replyTo: mail.replyTo ?? env.MAIL_REPLY_TO,
     to: mail.to,
     subject: mail.subject,
     html: mail.html,
@@ -39,7 +42,10 @@ const smtpSink: MailSink = async (mail) => {
 };
 
 const logSink: MailSink = async (mail) => {
-  logger.info({ to: mail.to, subject: mail.subject, category: mail.category }, `Mail (not sent, MAIL_DRIVER=log):\n${mail.text}`);
+  logger.info(
+    { to: mail.to, subject: mail.subject, category: mail.category },
+    `Mail (not sent, MAIL_DRIVER=log):\n${mail.text}`,
+  );
 };
 
 let sink: MailSink | undefined;
@@ -48,11 +54,21 @@ export function setMailSink(next: MailSink | undefined) {
   sink = next;
 }
 
+/** Sends a message; failures are logged, never thrown. */
 export async function deliver(mail: OutgoingMail): Promise<void> {
+  await deliverReporting(mail);
+}
+
+/** Like deliver, but also returns the failure reason (for per-recipient send logs). */
+export async function deliverReporting(
+  mail: OutgoingMail,
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const target = sink ?? (env.MAIL_DRIVER === 'smtp' ? smtpSink : logSink);
   try {
     await target(mail);
+    return { ok: true };
   } catch (err) {
     logger.error({ err, to: mail.to, category: mail.category }, 'Failed to send email');
+    return { ok: false, error: err instanceof Error ? err.message.slice(0, 500) : 'Unknown error' };
   }
 }

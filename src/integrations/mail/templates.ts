@@ -21,7 +21,8 @@ export interface RenderedMail {
 
 export type CodePurpose = 'register' | 'password_reset' | 'login';
 
-const greeting = (firstName?: string | null) => (firstName?.trim() ? `Hi ${firstName.trim()},` : 'Hi there,');
+const greeting = (firstName?: string | null) =>
+  firstName?.trim() ? `Hi ${firstName.trim()},` : 'Hi there,';
 
 const formatTime = (date: Date) =>
   `${date.toLocaleString('en-GB', {
@@ -37,12 +38,14 @@ const formatTime = (date: Date) =>
 const CODE_COPY: Record<CodePurpose, { noun: string; intro: string; action: string }> = {
   register: {
     noun: 'verification code',
-    intro: 'Thanks for signing up for Instant Doctor. Use the code below to verify your email address and finish creating your account.',
+    intro:
+      'Thanks for signing up for Instant Doctor. Use the code below to verify your email address and finish creating your account.',
     action: 'verify your email',
   },
   password_reset: {
     noun: 'password reset code',
-    intro: 'We received a request to reset the password for your Instant Doctor account. Use the code below to continue.',
+    intro:
+      'We received a request to reset the password for your Instant Doctor account. Use the code below to continue.',
     action: 'reset your password',
   },
   login: {
@@ -92,9 +95,15 @@ export function verificationCode(input: {
 
 export function welcome(input: { firstName?: string | null }): RenderedMail {
   const features: Array<[string, string]> = [
-    ['Consult a doctor', 'Book a video, voice or chat consultation with a licensed doctor in minutes.'],
+    [
+      'Consult a doctor',
+      'Book a video, voice or chat consultation with a licensed doctor in minutes.',
+    ],
     ['Order medication', 'Get prescriptions and pharmacy essentials delivered to your door.'],
-    ['Understand your lab results', 'Upload results and have a doctor explain them in plain language.'],
+    [
+      'Understand your lab results',
+      'Upload results and have a doctor explain them in plain language.',
+    ],
     ['Never miss a dose', 'Set medication reminders and track your treatment.'],
   ];
   const html = layout({
@@ -221,12 +230,16 @@ export function pharmacyNewOrder(input: {
     preheader: `New paid order ${input.trackingId} from ${input.customerName}.`,
     body: [
       heading('You have a new order'),
-      paragraph(escapeHtml(input.pharmacyName?.trim() ? `Hello ${input.pharmacyName.trim()},` : 'Hello,')),
+      paragraph(
+        escapeHtml(input.pharmacyName?.trim() ? `Hello ${input.pharmacyName.trim()},` : 'Hello,'),
+      ),
       paragraph('A customer has placed and paid for an order. Please prepare it for delivery.'),
       detailsTable([
         ['Order', input.trackingId],
         ['Customer', input.customerName],
-        ...(input.deliveryAddress ? ([['Deliver to', input.deliveryAddress]] as Array<[string, string]>) : []),
+        ...(input.deliveryAddress
+          ? ([['Deliver to', input.deliveryAddress]] as Array<[string, string]>)
+          : []),
       ]),
       `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 20px;border:1px solid ${BRAND.border};border-radius:12px;border-collapse:separate;">
         <tr><td colspan="2" style="padding:11px 16px;background:${BRAND.panel};border-radius:12px 12px 0 0;font-family:${BRAND.font};font-size:12px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:${BRAND.muted};">Items</td></tr>
@@ -250,12 +263,19 @@ export function pharmacyNewOrder(input: {
 }
 
 const ORDER_STATUS_COPY: Record<string, { label: string; message: string }> = {
-  pending: { label: 'Order received', message: 'We have received your order and sent it to the pharmacy.' },
-  processing: { label: 'Order accepted', message: 'The pharmacy accepted your order and is preparing it now.' },
+  pending: {
+    label: 'Order received',
+    message: 'We have received your order and sent it to the pharmacy.',
+  },
+  processing: {
+    label: 'Order accepted',
+    message: 'The pharmacy accepted your order and is preparing it now.',
+  },
   delivering: { label: 'Out for delivery', message: 'Your order is on its way to you.' },
   completed: {
     label: 'Delivered',
-    message: 'Your order has been delivered. We hope you feel better soon — you can rate the pharmacy in the app.',
+    message:
+      'Your order has been delivered. We hope you feel better soon — you can rate the pharmacy in the app.',
   },
   cancelled: { label: 'Cancelled', message: 'The pharmacy could not fulfil your order.' },
 };
@@ -270,17 +290,24 @@ export function orderStatusUpdate(input: {
   /** Extra context: ETA, rider details, cancellation reason and refund. */
   note?: string | null;
 }): RenderedMail {
-  const copy = ORDER_STATUS_COPY[input.status] ?? { label: input.status, message: 'Your order status has changed.' };
+  const copy = ORDER_STATUS_COPY[input.status] ?? {
+    label: input.status,
+    message: 'Your order status has changed.',
+  };
   const html = layout({
     preheader: `${copy.label}: order ${input.trackingId}. ${copy.message}`,
     body: [
       heading(copy.label),
       paragraph(escapeHtml(greeting(input.firstName))),
       paragraph(escapeHtml(copy.message)),
-      ...(input.note ? [notice(escapeHtml(input.note), input.status === 'cancelled' ? 'warning' : 'info')] : []),
+      ...(input.note
+        ? [notice(escapeHtml(input.note), input.status === 'cancelled' ? 'warning' : 'info')]
+        : []),
       detailsTable([
         ['Order', input.trackingId],
-        ...(input.pharmacyName ? ([['Pharmacy', input.pharmacyName]] as Array<[string, string]>) : []),
+        ...(input.pharmacyName
+          ? ([['Pharmacy', input.pharmacyName]] as Array<[string, string]>)
+          : []),
         ['Status', copy.label],
         ['Items', input.items.map((item) => `${item.name} × ${item.quantity}`).join(', ')],
         ['Total', input.total],
@@ -352,7 +379,9 @@ export function orderReceipt(input: {
       ...(input.address ? [detailsTable([['Delivering to', input.address]])] : []),
       groups,
       totals,
-      muted(`Paid ${escapeHtml(formatTime(input.paidAt))}. Keep this email as your receipt. Track your order in the Instant Doctor app.`),
+      muted(
+        `Paid ${escapeHtml(formatTime(input.paidAt))}. Keep this email as your receipt. Track your order in the Instant Doctor app.`,
+      ),
     ].join(''),
   });
   const text = plainText([
@@ -399,8 +428,12 @@ export function pharmacyOrderIssue(input: {
     preheader: `${input.customerName} reported "${label}" on order ${input.trackingId}.`,
     body: [
       heading('A customer reported a problem'),
-      paragraph(escapeHtml(input.pharmacyName?.trim() ? `Hello ${input.pharmacyName.trim()},` : 'Hello,')),
-      paragraph('Please review it and respond from your pharmacy workspace — the customer is notified when you do.'),
+      paragraph(
+        escapeHtml(input.pharmacyName?.trim() ? `Hello ${input.pharmacyName.trim()},` : 'Hello,'),
+      ),
+      paragraph(
+        'Please review it and respond from your pharmacy workspace — the customer is notified when you do.',
+      ),
       detailsTable([
         ['Order', input.trackingId],
         ['Customer', input.customerName],
@@ -432,7 +465,9 @@ export function pharmacyNewReview(input: {
     preheader: `New ${input.rating}-star review for order ${input.trackingId}.`,
     body: [
       heading('You received a review'),
-      paragraph(escapeHtml(input.pharmacyName?.trim() ? `Hello ${input.pharmacyName.trim()},` : 'Hello,')),
+      paragraph(
+        escapeHtml(input.pharmacyName?.trim() ? `Hello ${input.pharmacyName.trim()},` : 'Hello,'),
+      ),
       detailsTable([
         ['Order', input.trackingId],
         ['Rating', stars],
@@ -441,13 +476,22 @@ export function pharmacyNewReview(input: {
       muted('You can reply publicly from the Reviews page of your workspace.'),
     ].join(''),
   });
-  const text = plainText([`New ${input.rating}-star review for order ${input.trackingId}.`, input.comment]);
+  const text = plainText([
+    `New ${input.rating}-star review for order ${input.trackingId}.`,
+    input.comment,
+  ]);
   return { subject: `New ${input.rating}-star review – ${BRAND.name}`, html, text };
 }
 
 export function opsActivity(input: {
   activity: string;
-  user: { id: string; name: string; email: string; phoneNumber?: string | null; country?: string | null };
+  user: {
+    id: string;
+    name: string;
+    email: string;
+    phoneNumber?: string | null;
+    country?: string | null;
+  };
   at: Date;
 }): RenderedMail {
   const rows: Array<[string, string]> = [
@@ -472,7 +516,11 @@ export function opsActivity(input: {
     `New activity: ${input.activity}`,
     ...rows.map(([label, value]) => `${label}: ${value}`),
   ]);
-  return { subject: `[Activity] ${input.activity} – ${input.user.name || input.user.email}`, html, text };
+  return {
+    subject: `[Activity] ${input.activity} – ${input.user.name || input.user.email}`,
+    html,
+    text,
+  };
 }
 
 export type AppointmentEvent = 'confirmed' | 'accepted' | 'completed' | 'cancelled';
@@ -489,26 +537,45 @@ export interface AppointmentEmailInput {
   amount?: string | null;
 }
 
-function zoned(date: Date, timeZone: string | null | undefined, options: Intl.DateTimeFormatOptions) {
+function zoned(
+  date: Date,
+  timeZone: string | null | undefined,
+  options: Intl.DateTimeFormatOptions,
+) {
   try {
-    return new Intl.DateTimeFormat('en-GB', { ...options, timeZone: timeZone || 'UTC' }).format(date);
+    return new Intl.DateTimeFormat('en-GB', { ...options, timeZone: timeZone || 'UTC' }).format(
+      date,
+    );
   } catch {
     return new Intl.DateTimeFormat('en-GB', { ...options, timeZone: 'UTC' }).format(date);
   }
 }
 
 export function appointmentSchedule(start: Date, end: Date, timeZone?: string | null) {
-  const date = zoned(start, timeZone, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const date = zoned(start, timeZone, {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
   const shortDate = zoned(start, timeZone, { weekday: 'short', day: 'numeric', month: 'short' });
   const from = zoned(start, timeZone, { hour: 'numeric', minute: '2-digit', hour12: true });
-  const to = zoned(end, timeZone, { hour: 'numeric', minute: '2-digit', hour12: true, timeZoneName: 'short' });
+  const to = zoned(end, timeZone, {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZoneName: 'short',
+  });
   return { date, shortDate, from, time: `${from} – ${to}` };
 }
 
 export function appointmentUpdate(input: AppointmentEmailInput): RenderedMail {
   const when = appointmentSchedule(input.start, input.end, input.timeZone);
   const doctor = input.doctorName?.trim() || null;
-  const copy: Record<AppointmentEvent, { subject: string; title: string; lines: string[]; notice?: string }> = {
+  const copy: Record<
+    AppointmentEvent,
+    { subject: string; title: string; lines: string[]; notice?: string }
+  > = {
     confirmed: {
       subject: `Appointment confirmed – ${when.shortDate}, ${when.from}`,
       title: 'Your appointment is confirmed',
@@ -539,7 +606,8 @@ export function appointmentUpdate(input: AppointmentEmailInput): RenderedMail {
       subject: `Your appointment on ${when.shortDate} was cancelled`,
       title: 'Your appointment was cancelled',
       lines: [`${doctor ?? 'Your doctor'} cancelled this appointment.`],
-      notice: "<strong>Need to rebook?</strong> Reply to this email or contact our support team and we'll help you find another time.",
+      notice:
+        "<strong>Need to rebook?</strong> Reply to this email or contact our support team and we'll help you find another time.",
     },
   };
   const c = copy[input.event];
@@ -548,7 +616,9 @@ export function appointmentUpdate(input: AppointmentEmailInput): RenderedMail {
     ['Date', when.date],
     ['Time', when.time],
     ['Consultation', input.isTrial ? `${input.packageName} (free trial)` : input.packageName],
-    ...(input.amount && input.event === 'confirmed' ? ([['Amount paid', input.amount]] as Array<[string, string]>) : []),
+    ...(input.amount && input.event === 'confirmed'
+      ? ([['Amount paid', input.amount]] as Array<[string, string]>)
+      : []),
   ];
   const html = layout({
     preheader: `${c.title}. ${when.date}, ${when.time}.`,
@@ -568,7 +638,9 @@ export function appointmentUpdate(input: AppointmentEmailInput): RenderedMail {
     '',
     ...rows.map(([label, value]) => `${label}: ${value}`),
     c.notice ? '' : null,
-    c.notice ? "Need to rebook? Reply to this email or contact our support team and we'll help you find another time." : null,
+    c.notice
+      ? "Need to rebook? Reply to this email or contact our support team and we'll help you find another time."
+      : null,
   ]);
   return { subject: c.subject, html, text };
 }
@@ -590,7 +662,10 @@ const numberedSteps = (steps: Array<[string, string]>) =>
     )
     .join('')}</table>`;
 
-export function doctorApplicationReceived(input: { firstName: string; reference: string }): RenderedMail {
+export function doctorApplicationReceived(input: {
+  firstName: string;
+  reference: string;
+}): RenderedMail {
   const html = layout({
     preheader: 'We have your application and will review it within 3–5 working days.',
     body: [
@@ -621,26 +696,38 @@ export function doctorApplicationReceived(input: { firstName: string; reference:
   return { subject: `We received your ${BRAND.name} provider application`, html, text };
 }
 
-export function doctorApplicationApproved(input: { firstName: string; email: string }): RenderedMail {
+export function doctorApplicationApproved(input: {
+  firstName: string;
+  email: string;
+}): RenderedMail {
   const stores = [
     `<a href="${escapeHtml(env.DOCTOR_APP_PLAY_STORE_URL)}" style="color:${BRAND.deep};font-weight:600;">Google Play</a>`,
-    env.DOCTOR_APP_STORE_URL && `<a href="${escapeHtml(env.DOCTOR_APP_STORE_URL)}" style="color:${BRAND.deep};font-weight:600;">App Store</a>`,
+    env.DOCTOR_APP_STORE_URL &&
+      `<a href="${escapeHtml(env.DOCTOR_APP_STORE_URL)}" style="color:${BRAND.deep};font-weight:600;">App Store</a>`,
   ].filter(Boolean);
   const steps: Array<[string, string]> = [
-    ['Download the doctor app', `Install <strong>Instant Doctor for Doctors</strong> from ${stores.join(' or ')}.`],
+    [
+      'Download the doctor app',
+      `Install <strong>Instant Doctor for Doctors</strong> from ${stores.join(' or ')}.`,
+    ],
     [
       'Sign in',
       `Use <strong>${escapeHtml(input.email)}</strong> and the password you created when you applied. Forgot it? Tap “Forgot password” on the sign-in screen.`,
     ],
     ['Secure the app', 'Set a 4-digit PIN so only you can open your consultations.'],
-    ['Finish your profile', 'Add your working hours and payout account, then switch yourself to available to start receiving patients.'],
+    [
+      'Finish your profile',
+      'Add your working hours and payout account, then switch yourself to available to start receiving patients.',
+    ],
   ];
   const html = layout({
     preheader: 'Your application was approved. Download the doctor app and sign in to get started.',
     body: [
       heading(`Welcome to ${BRAND.name}, Dr. ${input.firstName}`),
       paragraph(escapeHtml(greeting(input.firstName))),
-      paragraph('Good news: your provider application has been <strong>approved</strong> and your doctor account is ready. Here is how to get started:'),
+      paragraph(
+        'Good news: your provider application has been <strong>approved</strong> and your doctor account is ready. Here is how to get started:',
+      ),
       numberedSteps(steps),
       button('Download the doctor app', env.DOCTOR_APP_PLAY_STORE_URL),
       muted('Questions about onboarding? Reply to this email and our provider team will help.'),
@@ -659,7 +746,10 @@ export function doctorApplicationApproved(input: { firstName: string; email: str
   return { subject: `You're approved: welcome to ${BRAND.name}`, html, text };
 }
 
-export function doctorApplicationRejected(input: { firstName: string; reason?: string | null }): RenderedMail {
+export function doctorApplicationRejected(input: {
+  firstName: string;
+  reason?: string | null;
+}): RenderedMail {
   const html = layout({
     preheader: 'An update on your Instant Doctor provider application.',
     body: [
@@ -713,6 +803,11 @@ export function opsDoctorApplication(input: {
     ].join(''),
     footerNote: 'Internal notification for the Instant Doctor operations team.',
   });
-  const text = plainText(['New provider application', ...rows.map(([label, value]) => `${label}: ${value}`), '', `Review: ${link}`]);
+  const text = plainText([
+    'New provider application',
+    ...rows.map(([label, value]) => `${label}: ${value}`),
+    '',
+    `Review: ${link}`,
+  ]);
   return { subject: `[Provider application] ${input.name} – ${input.specialization}`, html, text };
 }

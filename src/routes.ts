@@ -8,12 +8,16 @@ import {
   adminDoctorApplicationsRouter,
   doctorApplicationsRouter,
 } from './modules/doctor-applications/doctor-applications.routes.js';
+import { mailCenterRouter } from './modules/mail-center/mail-center.routes.js';
 import { adminBlogRouter, blogRouter } from './modules/blog/blog.routes.js';
 import { healthTipsRouter } from './modules/health-tips/health-tips.routes.js';
 import { labResultsRouter } from './modules/lab-results/lab-results.routes.js';
 import { medicationsRouter } from './modules/medications/medications.routes.js';
 import { carePlansRouter } from './modules/care-plans/care-plans.routes.js';
-import { careSummaryRouter, publicCareSummaryRouter } from './modules/family/care-summary.routes.js';
+import {
+  careSummaryRouter,
+  publicCareSummaryRouter,
+} from './modules/family/care-summary.routes.js';
 import { familyRouter } from './modules/family/family.routes.js';
 import { notificationsRouter } from './modules/notifications/notifications.routes.js';
 import { paymentsRouter } from './modules/payments/payments.routes.js';
@@ -32,6 +36,7 @@ import { subscriptionsRouter } from './modules/subscriptions/subscriptions.route
 export const apiRouter = Router();
 
 apiRouter.use('/admin/blog', adminBlogRouter);
+apiRouter.use('/admin/mail', mailCenterRouter);
 apiRouter.use('/admin/doctor-applications', adminDoctorApplicationsRouter);
 apiRouter.use('/admin', adminRouter);
 apiRouter.use('/pharmacy-portal', pharmacyPortalRouter);

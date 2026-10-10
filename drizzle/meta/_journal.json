@@ -176,6 +176,20 @@
       "when": 1791580000000,
       "tag": "0024_doctor_applications",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "5",
+      "when": 1791590000000,
+      "tag": "0025_admin_mail",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "5",
+      "when": 1791600000000,
+      "tag": "0026_admin_mail_recipient_details",
+      "breakpoints": true
     }
   ]
 }
