@@ -187,6 +187,21 @@ describe('admin mail centre', () => {
     expect(toCfo.text).toContain('Chief Financial Officer\nAvon Healthcare HMO');
   });
 
+  it('includes the app store links and contact details in a patient email', async () => {
+    const { token } = await createAdmin();
+    const patient = await createUser({ firstName: 'Bola', email: 'bola2@patient.test' });
+    const res = await api()
+      .post(`/api/v1/admin/patients/${patient.id}/email`)
+      .set(auth(token))
+      .send({ subject: 'Your results', message: 'Please check the app.' });
+    expect(res.status).toBe(200);
+    const mail = outbox.find((m) => m.to === 'bola2@patient.test')!;
+    expect(mail.html).toContain('play.google.com/store/apps/details?id=com.instantdoctor.app');
+    expect(mail.html).toContain('apps.apple.com/us/app/instant-doctor-telehealth');
+    expect(mail.html).toContain(env.MAIL_OFFICIAL_REPLY_TO);
+    expect(mail.text).toContain('Google Play: https://play.google.com');
+  });
+
   it('requires recipients and a sending role', async () => {
     const { token } = await createAdmin();
     expect((await api().post('/api/v1/admin/mail').set(auth(token)).send(letter)).status).toBe(400);

@@ -9,8 +9,8 @@ import { BRAND, escapeHtml } from './layout.js';
  * renders the same in Gmail, Outlook and Apple Mail.
  */
 
-const PLAY_STORE = 'https://play.google.com/store/apps/details?id=com.instantdoctor.app';
-const APP_STORE = 'https://apps.apple.com/us/app/instant-doctor-telehealth/id6753775573';
+export const PLAY_STORE = 'https://play.google.com/store/apps/details?id=com.instantdoctor.app';
+export const APP_STORE = 'https://apps.apple.com/us/app/instant-doctor-telehealth/id6753775573';
 const font = BRAND.font;
 
 const bodyStyles: Record<string, string> = {

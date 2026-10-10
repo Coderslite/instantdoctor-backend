@@ -1,3 +1,4 @@
+import { env } from '../../config/env.js';
 import {
   and,
   count,
@@ -43,6 +44,7 @@ import {
   rotatePortalSession,
 } from '../auth/portal-sessions.js';
 import { newId } from '../../lib/ids.js';
+import { APP_STORE, PLAY_STORE } from '../../integrations/mail/letterhead.js';
 import { deliver } from '../../integrations/mail/transport.js';
 import { escapeHtml, layout, paragraph, plainText } from '../../integrations/mail/layout.js';
 import { sendPush } from '../../integrations/push.js';
@@ -312,6 +314,37 @@ export async function updatePatient(id: string, input: PatientUpdate) {
   return getPatient(id);
 }
 
+/** In case the patient has removed the app: store links and how to reach us. */
+function appAndContact() {
+  const link = (href: string, label: string) =>
+    `<a href="${escapeHtml(href)}" style="display:inline-block;margin:0 8px 8px 0;padding:10px 16px;border-radius:8px;background:#0A4FAD;color:#ffffff;font-weight:600;font-size:14px;text-decoration:none;">${label}</a>`;
+  const contact = [
+    `Email: <a href="mailto:${escapeHtml(env.MAIL_OFFICIAL_REPLY_TO)}" style="color:#0A4FAD;">${escapeHtml(env.MAIL_OFFICIAL_REPLY_TO)}</a>`,
+    env.MAIL_COMPANY_PHONE ? `Phone: ${escapeHtml(env.MAIL_COMPANY_PHONE)}` : null,
+    `Website: <a href="${escapeHtml(env.WEBSITE_URL)}" style="color:#0A4FAD;">${escapeHtml(env.WEBSITE_URL.replace(/^https?:\/\//, ''))}</a>`,
+  ].filter(Boolean);
+  return (
+    `<div style="margin:24px 0 0;padding:18px 20px;border:1px solid #E2E8F0;border-radius:12px;background:#F8FAFC;">` +
+    `<p style="margin:0 0 12px;font-size:14px;font-weight:700;color:#0F2744;">Get the Instant Doctor app</p>` +
+    link(PLAY_STORE, 'Get it on Google Play') +
+    link(APP_STORE, 'Download on the App Store') +
+    `<p style="margin:8px 0 0;font-size:13px;line-height:21px;color:#64748B;">${contact.join('<br>')}</p>` +
+    `</div>`
+  );
+}
+
+function appAndContactText() {
+  return [
+    'Get the Instant Doctor app:',
+    `Google Play: ${PLAY_STORE}`,
+    `App Store: ${APP_STORE}`,
+    '',
+    `Email: ${env.MAIL_OFFICIAL_REPLY_TO}`,
+    ...(env.MAIL_COMPANY_PHONE ? [`Phone: ${env.MAIL_COMPANY_PHONE}`] : []),
+    `Website: ${env.WEBSITE_URL}`,
+  ];
+}
+
 export async function emailPatient(id: string, subject: string, message: string) {
   const [patientRecord] = await db
     .select({ email: users.email, firstName: users.firstName })
@@ -327,9 +360,10 @@ export async function emailPatient(id: string, subject: string, message: string)
       preheader: subject,
       body:
         paragraph(`Hello ${escapeHtml(patientRecord.firstName)},`) +
-        paragraph(escapeHtml(message).replace(/\n/g, '<br>')),
+        paragraph(escapeHtml(message).replace(/\n/g, '<br>')) +
+        appAndContact(),
     }),
-    text: plainText([`Hello ${patientRecord.firstName},`, '', message]),
+    text: plainText([`Hello ${patientRecord.firstName},`, '', message, '', ...appAndContactText()]),
   });
   return { delivered: true };
 }
