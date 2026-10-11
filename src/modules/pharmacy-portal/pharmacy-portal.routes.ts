@@ -1,13 +1,14 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { isTest } from '../../config/env.js';
-import { badRequest } from '../../lib/errors.js';
+import { badRequest, forbidden } from '../../lib/errors.js';
 import { parse } from '../../lib/validation.js';
 import { authenticatePharmacy, currentPharmacy, requirePharmacyRoles } from '../../middleware/authenticate-pharmacy.js';
 import { refreshSchema } from '../auth/auth.schemas.js';
 import * as schemas from './pharmacy-portal.schemas.js';
 import * as service from './pharmacy-portal.service.js';
 import * as store from './pharmacy-portal.marketplace.js';
+import * as pos from './pharmacy-portal.pos.js';
 import { purposeOf } from '../files/files.routes.js';
 import { presignUploadSchema } from '../files/files.schemas.js';
 import { completeUpload, createUpload, uploadFile } from '../files/files.service.js';
@@ -104,6 +105,8 @@ pharmacyPortalRouter.get('/me', async (req, res) => {
     ...pharmacy,
     ...(auth.role !== 'owner' && auth.role !== 'manager' ? { balance: undefined } : {}),
     accountRole: auth.role,
+    accountId: auth.staffId ?? 'owner',
+    accountName: await pos.accountName(auth, pharmacy.name),
     mustChangePassword: auth.mustChangePassword ?? false,
   });
 });
@@ -224,6 +227,7 @@ pharmacyPortalRouter.post('/products/:id/stock', requirePharmacyRoles('manager',
       String(req.params.id),
       input.quantity,
       input.reason,
+      input.id,
     ),
   );
 });
@@ -278,6 +282,41 @@ pharmacyPortalRouter.post('/orders/:id/actions', canWorkOrders, async (req, res)
     parse(schemas.orderActionSchema, req.body),
   );
   res.json(auth.role === 'sales_assistant' ? redactSalesOrder(order) : order);
+});
+const canSell = requirePharmacyRoles('manager', 'pharmacist', 'sales_assistant');
+// Inventory officers read it too: the offline inventory view runs from the same cache.
+pharmacyPortalRouter.get('/pos/catalog', requirePharmacyRoles('manager', 'pharmacist', 'sales_assistant', 'inventory_officer'), async (req, res) => {
+  const auth = currentPharmacy(req);
+  res.json(await pos.catalog(auth.pharmacyId, pos.isManagerRole(auth.role)));
+});
+pharmacyPortalRouter.post('/pos/sales/sync', canSell, async (req, res) => {
+  const auth = currentPharmacy(req);
+  const input = parse(schemas.posSyncSchema, req.body);
+  const cashierName = await pos.accountName(auth, (await service.profile(auth.pharmacyId)).name);
+  const result = await pos.syncSales(auth, cashierName, input.deviceId, input.sales);
+  if (!pos.isManagerRole(auth.role)) {
+    for (const entry of result.results) if (entry.status !== 'rejected') entry.sale.items = entry.sale.items.map((item) => ({ ...item, unitCost: null }));
+  }
+  res.json(result);
+});
+pharmacyPortalRouter.get('/pos/sales', canSell, async (req, res) =>
+  res.json(await pos.listSales(currentPharmacy(req), parse(schemas.posSalesListSchema, req.query))),
+);
+pharmacyPortalRouter.get('/pos/sales/:id', canSell, async (req, res) => {
+  const auth = currentPharmacy(req);
+  const sale = await pos.getSale(auth.pharmacyId, String(req.params.id), pos.isManagerRole(auth.role));
+  if (!pos.isManagerRole(auth.role) && sale.cashierStaffId !== auth.staffId) throw forbidden('You can only view sales you rang up');
+  res.json(sale);
+});
+pharmacyPortalRouter.post('/pos/sales/:id/void', canManage, async (req, res) => {
+  const auth = currentPharmacy(req);
+  const { reason } = parse(schemas.posVoidSchema, req.body);
+  const name = await pos.accountName(auth, (await service.profile(auth.pharmacyId)).name);
+  res.json(await pos.voidSale(auth.pharmacyId, String(req.params.id), reason, name));
+});
+pharmacyPortalRouter.get('/pos/summary', canManage, async (req, res) => {
+  const { from, to } = parse(schemas.posSummarySchema, req.query);
+  res.json(await pos.summary(currentPharmacy(req).pharmacyId, from, to));
 });
 pharmacyPortalRouter.get('/orders-board', canWorkOrders, async (req, res) =>
   res.json(await store.boardCounts(currentPharmacy(req).pharmacyId)),

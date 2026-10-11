@@ -1524,6 +1524,106 @@ op('patch', '/pharmacy-portal/staff/:id', {
     }),
   },
 });
+const posPayment = z.object({ method: z.enum(['cash', 'card', 'transfer', 'pos_terminal', 'other']), amount: z.number(), reference: z.string().nullable() });
+const PosSale = z.object({
+  id: z.string(),
+  receiptNumber: z.string(),
+  deviceId: z.string().nullable(),
+  cashierStaffId: z.string().nullable(),
+  cashierName: z.string(),
+  customerName: z.string().nullable(),
+  customerPhone: z.string().nullable(),
+  subtotal: z.number(),
+  discountTotal: z.number(),
+  total: z.number(),
+  payments: z.array(posPayment),
+  amountTendered: z.number(),
+  changeDue: z.number(),
+  status: z.enum(['completed', 'voided']),
+  notes: z.string().nullable(),
+  voidReason: z.string().nullable(),
+  voidedByName: z.string().nullable(),
+  voidedAt: z.date().nullable(),
+  stockWarnings: z.array(z.object({ productId: z.string(), name: z.string(), requested: z.number(), available: z.number() })).nullable(),
+  soldAt: z.date(),
+  createdAt: z.date(),
+  items: z.array(z.object({ id: z.string(), productId: z.string().nullable(), name: z.string(), sku: z.string().nullable(), batchNumber: z.string().nullable(), unitPrice: z.number(), discount: z.number(), quantity: z.number(), lineTotal: z.number(), unitCost: z.number().nullable().meta({ description: 'Null for non-manager roles' }) })),
+}).meta({ id: 'PosSale' });
+const posSaleId = z.object({ id: z.string() });
+op('post', '/pharmacy-portal/products/:id/stock', {
+  tag: 'Pharmacy portal',
+  summary: 'Adjust a product’s stock',
+  description: 'Pass a client-generated `id` (UUID) to make the adjustment idempotent: an offline till that retries the same adjustment gets the current stock back instead of applying it twice.',
+  params: posSaleId,
+  body: pharmacyPortal.stockSchema,
+  ok: { 200: z.object({ id: z.string(), stockRemaining: z.number() }) },
+  errors: { 404: 'NOT_FOUND', 409: 'MOVEMENT_ID_REUSED — the id belongs to another product' },
+});
+op('get', '/pharmacy-portal/pos/catalog', {
+  tag: 'Pharmacy portal',
+  summary: 'Download every sellable product for the offline till',
+  description: 'Everything a till needs to sell without a connection. `purchasePrice` is null for non-manager roles. Roles: manager, pharmacist, sales assistant, inventory officer.',
+  ok: { 200: z.object({ items: z.array(z.record(z.string(), z.unknown())), generatedAt: z.iso.datetime() }) },
+});
+op('post', '/pharmacy-portal/pos/sales/sync', {
+  tag: 'Pharmacy portal',
+  summary: 'Upload counter sales recorded at the till (online or offline)',
+  description: [
+    'Each sale carries a till-generated UUID `id`; re-sending a sale returns `duplicate` with the stored sale, so retries are safe.',
+    'Totals are recomputed on the server: each line is `round2(unitPrice × quantity)` less its `discount` %, then `saleDiscount` (managers only) comes off. A `total` that does not match is rejected.',
+    'Stock is taken off the shelf. Stock that ran short while offline is recorded in `stockWarnings` rather than refusing the sale. Change may only be given from cash.',
+    'Every sale is handled on its own: a rejected sale does not block the rest of the batch.',
+  ].join('\n\n'),
+  body: pharmacyPortal.posSyncSchema.extend({ sales: z.array(pharmacyPortal.posSaleSchema).min(1).max(50) }),
+  ok: {
+    200: z.object({
+      results: z.array(z.union([
+        z.object({ id: z.string(), status: z.enum(['synced', 'duplicate']), sale: PosSale }),
+        z.object({ id: z.string().nullable(), status: z.literal('rejected'), error: z.string() }),
+      ])),
+      syncedAt: z.iso.datetime(),
+    }),
+  },
+});
+op('get', '/pharmacy-portal/pos/sales', {
+  tag: 'Pharmacy portal',
+  summary: 'List counter sales',
+  description: 'Managers see every sale; other staff see only the sales they rang up.',
+  query: pharmacyPortal.posSalesListSchema,
+  ok: { 200: z.object({ items: z.array(PosSale), total: z.number(), limit: z.number(), offset: z.number() }) },
+});
+op('get', '/pharmacy-portal/pos/sales/:id', {
+  tag: 'Pharmacy portal',
+  summary: 'Get one counter sale (for reprinting)',
+  params: posSaleId,
+  ok: { 200: PosSale },
+  errors: { 403: 'FORBIDDEN — not your sale', 404: 'NOT_FOUND' },
+});
+op('post', '/pharmacy-portal/pos/sales/:id/void', {
+  tag: 'Pharmacy portal',
+  summary: 'Void a counter sale and return its stock',
+  description: 'Manager or owner. Puts back only what the sale actually took off the shelf.',
+  params: posSaleId,
+  body: pharmacyPortal.posVoidSchema,
+  ok: { 200: PosSale },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('get', '/pharmacy-portal/pos/summary', {
+  tag: 'Pharmacy portal',
+  summary: 'End-of-day totals for a time window',
+  description: 'Manager or owner. The till sends its local day bounds. Cash takings are net of change given.',
+  query: pharmacyPortal.posSummarySchema,
+  ok: {
+    200: z.object({
+      from: z.string(), to: z.string(), salesCount: z.number(), itemsSold: z.number(), gross: z.number(), discounts: z.number(), net: z.number(),
+      averageSale: z.number(), costOfGoods: z.number(), grossProfit: z.number(), costComplete: z.boolean(), voidedCount: z.number(), voidedTotal: z.number(),
+      payments: z.array(z.object({ method: z.string(), amount: z.number() })),
+      cashiers: z.array(z.object({ name: z.string(), sales: z.number(), total: z.number() })),
+      topProducts: z.array(z.object({ name: z.string(), quantity: z.number(), revenue: z.number() })),
+      stockWarnings: z.array(z.object({ productId: z.string(), name: z.string(), requested: z.number(), available: z.number(), receiptNumber: z.string() })),
+    }),
+  },
+});
 const DIRECT_UPLOAD = [
   '**Preferred upload flow** — the file goes straight to storage, never through the API:',
   '1. `POST …/uploads/presign` with `purpose`, `contentType`, exact `size` (bytes) and optional `name`. The purpose policy (type, size, who may upload) is checked here.',

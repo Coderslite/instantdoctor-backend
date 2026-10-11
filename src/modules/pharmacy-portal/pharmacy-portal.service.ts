@@ -1,6 +1,7 @@
 import { and, count, desc, eq, gt, like, lte, ne, or, sql } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { inventoryMovements, orderItems, orders, pharmacies, pharmacyStaff, portalSessions, productCategories, products, purchaseOrderItems, purchaseOrders, suppliers, users } from '../../db/schema/index.js';
+import { isDuplicateKeyError } from '../../lib/db-errors.js';
 import { hashPassword, sha256, verifyPassword } from '../../lib/crypto.js';
 import { badRequest, conflict, forbidden, notFound, unauthorized } from '../../lib/errors.js';
 import { newId } from '../../lib/ids.js';
@@ -138,15 +139,34 @@ export async function updateProduct(pharmacyId: string, id: string, input: Parti
   return ownProduct(pharmacyId, id);
 }
 
-export async function adjustStock(pharmacyId: string, id: string, quantity: number, reason?: string) {
-  const item = await ownProduct(pharmacyId, id);
-  const stockRemaining = item.stockRemaining + quantity;
-  if (stockRemaining < 0) throw badRequest('Stock cannot be reduced below zero');
-  await db.transaction(async (tx) => {
+/**
+ * `movementId` lets an offline till retry the same adjustment safely: a
+ * movement that already exists is acknowledged instead of applied twice.
+ */
+export async function adjustStock(pharmacyId: string, id: string, quantity: number, reason?: string, movementId?: string) {
+  if (movementId) {
+    const [existing] = await db.select({ productId: inventoryMovements.productId }).from(inventoryMovements).where(and(eq(inventoryMovements.id, movementId), eq(inventoryMovements.pharmacyId, pharmacyId))).limit(1);
+    if (existing) {
+      if (existing.productId !== id) throw conflict('MOVEMENT_ID_REUSED', 'This stock adjustment id belongs to another product');
+      return { id, stockRemaining: (await ownProduct(pharmacyId, id)).stockRemaining };
+    }
+  }
+  const apply = () => db.transaction(async (tx) => {
+    const [item] = await tx.select({ stockRemaining: products.stockRemaining }).from(products).where(and(eq(products.id, id), eq(products.pharmacyId, pharmacyId))).for('update');
+    if (!item) throw notFound('Product');
+    const stockRemaining = item.stockRemaining + quantity;
+    if (stockRemaining < 0) throw badRequest('Stock cannot be reduced below zero');
     await tx.update(products).set({ stockRemaining }).where(eq(products.id, id));
-    await tx.insert(inventoryMovements).values({ id: newId(), pharmacyId, productId: id, quantity, reason });
+    await tx.insert(inventoryMovements).values({ id: movementId ?? newId(), pharmacyId, productId: id, quantity, reason });
+    return { id, stockRemaining };
   });
-  return { id, stockRemaining };
+  try {
+    return await apply();
+  } catch (error) {
+    // A concurrent retry of the same adjustment got there first.
+    if (!movementId || !isDuplicateKeyError(error)) throw error;
+    return { id, stockRemaining: (await ownProduct(pharmacyId, id)).stockRemaining };
+  }
 }
 
 export async function listStockMovements(pharmacyId: string, productId: string) {

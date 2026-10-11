@@ -14,7 +14,7 @@ export const updateStaffSchema = z.object({ role: staffRoleSchema.optional(), st
 export const listSchema = z.object({ search: z.string().trim().max(100).optional(), status: z.string().trim().max(40).optional(), categoryId: z.string().min(1).optional(), stock: z.enum(['in_stock', 'low_stock', 'out_of_stock']).optional(), limit: z.coerce.number().int().min(1).max(100).default(20), offset: z.coerce.number().int().min(0).default(0) });
 export const productSchema = z.object({ categoryId: z.string().min(1).nullable().optional(), name: z.string().trim().min(1).max(255), sku: z.string().trim().max(80).nullable().optional(), manufacturer: z.string().trim().max(255).nullable().optional(), batchNumber: z.string().trim().max(100).nullable().optional(), expiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(), description: z.string().trim().max(5000).nullable().optional(), amount: z.coerce.number().nonnegative(), purchasePrice: z.coerce.number().nonnegative().nullable().optional(), discount: z.coerce.number().int().min(0).max(100).default(0), stockRemaining: z.coerce.number().int().nonnegative().default(0), reorderLevel: z.coerce.number().int().nonnegative().default(5), images: z.array(z.url().max(1024)).max(12).default([]), status: z.enum(['active', 'inactive', 'deleted']).default('active') });
 export const updateProductSchema = productSchema.partial().refine((value) => Object.keys(value).length > 0, 'At least one field is required');
-export const stockSchema = z.object({ quantity: z.coerce.number().int(), reason: z.string().trim().max(255).optional() });
+export const stockSchema = z.object({ id: z.uuid().optional(), quantity: z.coerce.number().int(), reason: z.string().trim().max(255).optional() });
 export const supplierSchema = z.object({ name: z.string().trim().min(1).max(255), contactName: z.string().trim().max(255).nullable().optional(), phoneNumber: z.string().trim().max(32).nullable().optional(), email: z.email().nullable().optional(), address: z.string().trim().max(512).nullable().optional(), status: z.enum(['active', 'inactive']).default('active') });
 const purchaseItemSchema = z.object({ productId: z.string().min(1), quantity: z.coerce.number().int().positive(), unitCost: z.coerce.number().nonnegative(), batchNumber: z.string().trim().max(100).nullable().optional(), expiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional() });
 export const purchaseOrderSchema = z.object({ supplierId: z.string().min(1).nullable().optional(), expectedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(), notes: z.string().trim().max(5000).nullable().optional(), items: z.array(purchaseItemSchema).min(1).max(100) });
@@ -38,3 +38,44 @@ export const reviewReplySchema = z.object({ reply: z.string().trim().min(2).max(
 export const issueResponseSchema = z.object({ response: z.string().trim().min(2).max(2000), resolve: z.boolean().default(false) });
 export const issueListSchema = z.object({ status: z.enum(['open', 'resolved']).optional(), limit: z.coerce.number().int().min(1).max(100).default(20), offset: z.coerce.number().int().min(0).default(0) });
 export const pageSchema = z.object({ limit: z.coerce.number().int().min(1).max(100).default(20), offset: z.coerce.number().int().min(0).default(0) });
+
+const isoDateTime = z.iso.datetime({ offset: true });
+const posLineSchema = z.object({
+  productId: z.string().min(1).max(36).nullable(),
+  name: z.string().trim().min(1).max(255),
+  sku: z.string().trim().max(80).nullable().optional(),
+  batchNumber: z.string().trim().max(100).nullable().optional(),
+  unitPrice: z.coerce.number().nonnegative().max(100_000_000),
+  discount: z.coerce.number().int().min(0).max(100).default(0),
+  quantity: z.coerce.number().int().positive().max(100_000),
+});
+export const posSaleSchema = z.object({
+  id: z.uuid(),
+  receiptNumber: z.string().trim().min(3).max(40).regex(/^[A-Z0-9-]+$/),
+  customerName: z.string().trim().max(255).nullable().optional(),
+  customerPhone: z.string().trim().max(32).nullable().optional(),
+  items: z.array(posLineSchema).min(1).max(200),
+  saleDiscount: z.coerce.number().nonnegative().default(0),
+  payments: z.array(z.object({
+    method: z.enum(['cash', 'card', 'transfer', 'pos_terminal', 'other']),
+    amount: z.coerce.number().positive().max(100_000_000),
+    reference: z.string().trim().max(120).nullable().optional(),
+  })).min(1).max(5),
+  total: z.coerce.number().nonnegative(),
+  notes: z.string().trim().max(500).nullable().optional(),
+  soldAt: isoDateTime,
+});
+export const posSyncSchema = z.object({
+  deviceId: z.string().trim().min(4).max(64),
+  sales: z.array(z.unknown()).min(1).max(50),
+});
+export const posSalesListSchema = z.object({
+  from: isoDateTime.optional(),
+  to: isoDateTime.optional(),
+  search: z.string().trim().max(100).optional(),
+  status: z.enum(['completed', 'voided']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+export const posSummarySchema = z.object({ from: isoDateTime, to: isoDateTime });
+export const posVoidSchema = z.object({ reason: z.string().trim().min(3).max(255) });

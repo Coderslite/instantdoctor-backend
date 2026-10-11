@@ -367,3 +367,74 @@ export const orderIssues = mysqlTable(
     index('order_issues_order_idx').on(t.orderId),
   ],
 );
+
+export const POS_PAYMENT_METHODS = ['cash', 'card', 'transfer', 'pos_terminal', 'other'] as const;
+export type PosPaymentMethod = (typeof POS_PAYMENT_METHODS)[number];
+export type PosPayment = { method: PosPaymentMethod; amount: number; reference?: string | null };
+export type PosStockWarning = { productId: string; name: string; requested: number; available: number };
+
+/**
+ * A walk-in sale rung up at the pharmacy counter. The id is generated on the
+ * till so a sale recorded offline syncs exactly once, however often it retries.
+ */
+export const posSales = mysqlTable(
+  'pos_sales',
+  {
+    id: id('id').primaryKey(),
+    pharmacyId: id('pharmacy_id')
+      .notNull()
+      .references(() => pharmacies.id, { onDelete: 'cascade' }),
+    receiptNumber: varchar('receipt_number', { length: 40 }).notNull(),
+    deviceId: varchar('device_id', { length: 64 }),
+    /** Null when the pharmacy owner account rang up the sale. */
+    cashierStaffId: id('cashier_staff_id').references(() => pharmacyStaff.id, { onDelete: 'set null' }),
+    cashierName: varchar('cashier_name', { length: 255 }).notNull(),
+    customerName: varchar('customer_name', { length: 255 }),
+    customerPhone: varchar('customer_phone', { length: 32 }),
+    subtotal: money('subtotal').notNull(),
+    discountTotal: money('discount_total').notNull().default(0),
+    total: money('total').notNull(),
+    payments: json('payments').$type<PosPayment[]>().notNull(),
+    amountTendered: money('amount_tendered').notNull(),
+    changeDue: money('change_due').notNull().default(0),
+    status: mysqlEnum('status', ['completed', 'voided']).notNull().default('completed'),
+    notes: varchar('notes', { length: 500 }),
+    voidReason: varchar('void_reason', { length: 255 }),
+    voidedByName: varchar('voided_by_name', { length: 255 }),
+    voidedAt: timestamp('voided_at'),
+    /** Stock that was short when an offline sale reached the server. */
+    stockWarnings: json('stock_warnings').$type<PosStockWarning[]>(),
+    /** When the till recorded the sale; created_at is when it reached the server. */
+    soldAt: timestamp('sold_at').notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('pos_sales_receipt_uq').on(t.pharmacyId, t.receiptNumber),
+    index('pos_sales_pharmacy_idx').on(t.pharmacyId, t.soldAt),
+    index('pos_sales_cashier_idx').on(t.pharmacyId, t.cashierStaffId, t.soldAt),
+  ],
+);
+
+/** Sale lines snapshot the product as it was rung up. */
+export const posSaleItems = mysqlTable(
+  'pos_sale_items',
+  {
+    id: id('id').primaryKey(),
+    saleId: id('sale_id')
+      .notNull()
+      .references(() => posSales.id, { onDelete: 'cascade' }),
+    productId: id('product_id').references(() => products.id, { onDelete: 'set null' }),
+    name: varchar('name', { length: 255 }).notNull(),
+    sku: varchar('sku', { length: 80 }),
+    batchNumber: varchar('batch_number', { length: 100 }),
+    unitPrice: money('unit_price').notNull(),
+    /** Percentage off the unit price. */
+    discount: int('discount').notNull().default(0),
+    quantity: int('quantity').notNull(),
+    lineTotal: money('line_total').notNull(),
+    /** Purchase cost at the time of sale, for margin reports. */
+    unitCost: money('unit_cost'),
+  },
+  (t) => [index('pos_sale_items_sale_idx').on(t.saleId)],
+);
