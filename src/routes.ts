@@ -1,13 +1,18 @@
 import { Router } from 'express';
 import { anonymousRouter } from './modules/anonymous/anonymous.routes.js';
 import { appointmentsRouter } from './modules/appointments/appointments.routes.js';
-import { prescriptionsRouter } from './modules/appointments/prescriptions.routes.js';
+import { prescriptionsRouter } from './modules/prescriptions/prescriptions.routes.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { doctorsRouter } from './modules/doctors/doctors.routes.js';
 import {
   adminDoctorApplicationsRouter,
   doctorApplicationsRouter,
 } from './modules/doctor-applications/doctor-applications.routes.js';
+import {
+  adminHmoLinkRequestsRouter,
+  adminHmoRouter,
+  hmoMemberRouter,
+} from './modules/hmo/hmo.routes.js';
 import { mailCenterRouter } from './modules/mail-center/mail-center.routes.js';
 import { adminBlogRouter, blogRouter } from './modules/blog/blog.routes.js';
 import { healthTipsRouter } from './modules/health-tips/health-tips.routes.js';
@@ -31,15 +36,19 @@ import { waitlistRouter } from './modules/waitlist/waitlist.routes.js';
 import { walletRouter } from './modules/wallet/wallet.routes.js';
 import { adminRouter } from './modules/admin/admin.routes.js';
 import { pharmacyPortalRouter } from './modules/pharmacy-portal/pharmacy-portal.routes.js';
+import { hmoPortalRouter } from './modules/hmo-portal/hmo-portal.routes.js';
 import { subscriptionsRouter } from './modules/subscriptions/subscriptions.routes.js';
 
 export const apiRouter = Router();
 
 apiRouter.use('/admin/blog', adminBlogRouter);
 apiRouter.use('/admin/mail', mailCenterRouter);
+apiRouter.use('/admin/hmos', adminHmoRouter);
+apiRouter.use('/admin/hmo-link-requests', adminHmoLinkRequestsRouter);
 apiRouter.use('/admin/doctor-applications', adminDoctorApplicationsRouter);
 apiRouter.use('/admin', adminRouter);
 apiRouter.use('/pharmacy-portal', pharmacyPortalRouter);
+apiRouter.use('/hmo-portal', hmoPortalRouter);
 apiRouter.use('/auth', authRouter);
 apiRouter.use('/users', usersRouter);
 apiRouter.use('/doctors', doctorsRouter);
@@ -48,6 +57,7 @@ apiRouter.use('/appointments', appointmentsRouter);
 apiRouter.use('/prescriptions', prescriptionsRouter);
 apiRouter.use('/payments', paymentsRouter);
 apiRouter.use('/subscriptions', subscriptionsRouter);
+apiRouter.use('/hmo', hmoMemberRouter);
 apiRouter.use('/wallet', walletRouter);
 apiRouter.use('/referrals', referralsRouter);
 apiRouter.use('/lab-results', labResultsRouter);

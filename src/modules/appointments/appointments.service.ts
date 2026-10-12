@@ -21,9 +21,20 @@ import { confirmAppointment } from '../payments/fulfillment.js';
 import { AFRICAN_COUNTRIES, quoteFromUsd, resolveRegion } from '../pricing/pricing.service.js';
 import { getAppSettings, getTrialDoctorId } from '../settings/settings.service.js';
 import { serializeUserSummary } from '../users/users.serializer.js';
-import { familyCreditDoctorEarning, requireAvailableFamilyCredit } from '../subscriptions/subscriptions.service.js';
+import {
+  familyCreditDoctorEarning,
+  requireAvailableFamilyCredit,
+} from '../subscriptions/subscriptions.service.js';
 import type { CreateAppointmentInput } from './appointments.schemas.js';
 import { convertCurrencyAmount, doctorEarningFx } from '../../integrations/exchange-rates.js';
+import { round2 } from '../../lib/money.js';
+import {
+  coverageFor,
+  membershipFor,
+  recordClaim,
+  type CoverageDecision,
+} from '../hmo/hmo.coverage.js';
+import { NIGERIA } from '../hmo/hmo.pricing.js';
 
 const TRIAL_DURATION_SECONDS = 30 * 60;
 const TRIAL_FEATURES: AppointmentPackageFeatures = {
@@ -42,9 +53,22 @@ type AppointmentRow = typeof appointments.$inferSelect;
 
 // ─── Packages & quotes ───────────────────────────────────────────────────────
 
-/** Active packages priced for the caller's region. */
+type HmoListing =
+  | { covered: false; hmoName: string; notice: 'not_covered' | 'limit_reached' | null }
+  | {
+      covered: true;
+      hmoName: string;
+      summary: string;
+      standardPrice: number;
+      usage: CoverageDecision['usage'];
+    };
+
+/** Active packages priced for the caller's region (or their HMO agreement). */
 export async function listPackagesForUser(userId: string) {
-  const [user] = await db.select({ country: users.country, currency: users.currency }).from(users).where(eq(users.id, userId));
+  const [user] = await db
+    .select({ country: users.country, currency: users.currency })
+    .from(users)
+    .where(eq(users.id, userId));
   if (!user) throw notFound('User');
   const region = resolveRegion(user);
   const packages = await db
@@ -52,10 +76,11 @@ export async function listPackagesForUser(userId: string) {
     .from(appointmentPackages)
     .where(eq(appointmentPackages.isActive, true))
     .orderBy(appointmentPackages.sortOrder, appointmentPackages.amountUsd);
+  const membership = await membershipFor(userId);
   return Promise.all(
     packages.map(async (p) => {
       const quote = await quoteFromUsd(p.amountUsd, region);
-      return {
+      const listing = {
         id: p.id,
         name: p.name,
         type: p.type,
@@ -65,6 +90,30 @@ export async function listPackagesForUser(userId: string) {
         isRecommended: p.isRecommended,
         badge: p.badge,
         price: { amount: quote.amount, currency: quote.currency, amountUsd: quote.amountUsd },
+        hmo: null as HmoListing | null,
+      };
+      if (!membership) return listing;
+      // HMO members see what their agreement charges them; `price` carries it so older apps show it too.
+      const ng = await quoteFromUsd(p.amountUsd, NIGERIA);
+      const { decision, notice } = await coverageFor(userId, 'consultation', p.id, ng.amount, {
+        membership,
+      });
+      if (!decision)
+        return { ...listing, hmo: { covered: false, hmoName: membership.hmo.name, notice } };
+      return {
+        ...listing,
+        price: {
+          amount: decision.patientAmount,
+          currency: 'NGN',
+          amountUsd: round2(decision.patientAmount / ng.exchangeRate),
+        },
+        hmo: {
+          covered: true,
+          hmoName: membership.hmo.name,
+          summary: decision.summary,
+          standardPrice: decision.standardAmount,
+          usage: decision.usage,
+        },
       };
     }),
   );
@@ -85,12 +134,15 @@ interface BookingPlan {
   priceUsd: number | null;
   useFamilyCredit: boolean;
   subscriptionCreditEarning: number | null;
+  /** Priced by the patient's HMO agreement; a claim is recorded with the booking. */
+  hmo: CoverageDecision | null;
 }
 
 async function planBooking(userId: string, input: CreateAppointmentInput): Promise<BookingPlan> {
   if (input.isTrial) {
     const settings = await getAppSettings();
-    if (!settings.trial) throw unprocessable('TRIAL_DISABLED', 'Free trial consultations are not available');
+    if (!settings.trial)
+      throw unprocessable('TRIAL_DISABLED', 'Free trial consultations are not available');
     return {
       doctorId: await getTrialDoctorId(),
       packageId: null,
@@ -103,18 +155,24 @@ async function planBooking(userId: string, input: CreateAppointmentInput): Promi
       priceUsd: 0,
       useFamilyCredit: false,
       subscriptionCreditEarning: null,
+      hmo: null,
     };
   }
 
   const [pkg] = await db
     .select()
     .from(appointmentPackages)
-    .where(and(eq(appointmentPackages.id, input.packageId!), eq(appointmentPackages.isActive, true)))
+    .where(
+      and(eq(appointmentPackages.id, input.packageId!), eq(appointmentPackages.isActive, true)),
+    )
     .limit(1);
-  if (!pkg) throw badRequest('Unknown or inactive package', [{ path: 'packageId', message: 'not found' }]);
+  if (!pkg)
+    throw badRequest('Unknown or inactive package', [{ path: 'packageId', message: 'not found' }]);
 
   if (input.useFamilyCredit && !pkg.features.allowFamilyCredit) {
-    throw badRequest('Family Care credits cover virtual GP consultations only', [{ path: 'packageId', message: 'select a GP package' }]);
+    throw badRequest('Family Care credits cover virtual GP consultations only', [
+      { path: 'packageId', message: 'select a GP package' },
+    ]);
   }
   const doctorId = input.doctorId ?? null;
   if (doctorId) {
@@ -125,14 +183,42 @@ async function planBooking(userId: string, input: CreateAppointmentInput): Promi
       .where(and(eq(users.id, doctorId), eq(users.role, 'doctor')))
       .limit(1);
     if (!doctor) throw badRequest('Unknown doctor', [{ path: 'doctorId', message: 'not found' }]);
-    if (!doctor.available) throw unprocessable('DOCTOR_UNAVAILABLE', 'This doctor is not taking appointments');
+    if (!doctor.available)
+      throw unprocessable('DOCTOR_UNAVAILABLE', 'This doctor is not taking appointments');
   }
 
-  const [user] = await db.select({ country: users.country, currency: users.currency }).from(users).where(eq(users.id, userId));
+  const [user] = await db
+    .select({ country: users.country, currency: users.currency })
+    .from(users)
+    .where(eq(users.id, userId));
   if (!user) throw notFound('User');
   // Price is always computed server-side; the client never supplies an amount.
   const quote = await quoteFromUsd(pkg.amountUsd, resolveRegion(user));
   const african = AFRICAN_COUNTRIES.has(user.country?.toUpperCase() ?? '');
+
+  // HMO agreements take over pricing for covered members (Family Care credits stay separate).
+  if (!input.useFamilyCredit) {
+    const ng = await quoteFromUsd(pkg.amountUsd, NIGERIA);
+    const { decision } = await coverageFor(userId, 'consultation', pkg.id, ng.amount, {
+      enforce: true,
+    });
+    if (decision) {
+      return {
+        doctorId,
+        packageId: pkg.id,
+        packageLabel: pkg.name,
+        packageType: pkg.type,
+        packageFeatures: pkg.features,
+        durationSeconds: pkg.durationSeconds,
+        price: decision.patientAmount,
+        currency: 'NGN',
+        priceUsd: round2(decision.patientAmount / ng.exchangeRate),
+        useFamilyCredit: false,
+        subscriptionCreditEarning: null,
+        hmo: decision,
+      };
+    }
+  }
 
   return {
     doctorId,
@@ -146,6 +232,7 @@ async function planBooking(userId: string, input: CreateAppointmentInput): Promi
     priceUsd: input.useFamilyCredit ? 0 : quote.amountUsd,
     useFamilyCredit: input.useFamilyCredit,
     subscriptionCreditEarning: input.useFamilyCredit ? familyCreditDoctorEarning(african) : null,
+    hmo: null,
   };
 }
 
@@ -175,7 +262,9 @@ export async function createAppointment(
 
   const minStart = Date.now() + env.BOOKING_MIN_LEAD_MINUTES * 60_000;
   if (input.startTime.getTime() < minStart) {
-    throw badRequest(`Appointments must start at least ${env.BOOKING_MIN_LEAD_MINUTES} minutes from now`);
+    throw badRequest(
+      `Appointments must start at least ${env.BOOKING_MIN_LEAD_MINUTES} minutes from now`,
+    );
   }
 
   const plan = await planBooking(userId, input);
@@ -184,6 +273,7 @@ export async function createAppointment(
   const startTime = input.startTime;
   const endTime = new Date(startTime.getTime() + plan.durationSeconds * 1000);
   const appointmentId = newId();
+  const hmoClaimId = plan.hmo ? newId() : null;
   let effects: Effect[] = [];
 
   try {
@@ -204,8 +294,8 @@ export async function createAppointment(
       }
 
       const subscription = plan.useFamilyCredit
-          ? await requireAvailableFamilyCredit(tx, userId)
-          : null;
+        ? await requireAvailableFamilyCredit(tx, userId)
+        : null;
 
       await tx.insert(appointments).values({
         id: appointmentId,
@@ -226,14 +316,28 @@ export async function createAppointment(
         isTrial: input.isTrial,
         isSubscriptionCredit: plan.useFamilyCredit,
         subscriptionId: subscription?.id ?? null,
-        doctorEarning: plan.subscriptionCreditEarning,
+        doctorEarning: plan.subscriptionCreditEarning ?? plan.hmo?.doctorEarning ?? null,
+        hmoClaimId,
         holdExpiresAt: holdUntil(),
         idempotencyKey: idempotencyKey ?? null,
         timeZone: validTimeZone(timeZone),
       });
 
       // Trials need no payment: confirm immediately with the same side effects as a paid booking.
-      return input.isTrial || plan.useFamilyCredit ? (await confirmAppointment(tx, appointmentId)).effects : [];
+      if (plan.hmo && hmoClaimId) {
+        await recordClaim(tx, {
+          id: hmoClaimId,
+          userId,
+          decision: plan.hmo,
+          appointmentId,
+          description: `${plan.packageLabel} consultation`,
+          serviceDate: startTime,
+        });
+      }
+
+      // Trials, Family Care credits and fully covered HMO visits need no payment: confirm now.
+      const free = input.isTrial || plan.useFamilyCredit || (plan.hmo !== null && plan.price === 0);
+      return free ? (await confirmAppointment(tx, appointmentId)).effects : [];
     });
   } catch (err) {
     // A concurrent request with the same key won the race: return its result.
@@ -245,7 +349,10 @@ export async function createAppointment(
   }
 
   await runEffects(effects);
-  return { appointment: await getAppointmentForUser({ userId, role: 'user' }, appointmentId), created: true };
+  return {
+    appointment: await getAppointmentForUser({ userId, role: 'user' }, appointmentId),
+    created: true,
+  };
 }
 
 export function validTimeZone(value: string | null | undefined): string | null {
@@ -281,9 +388,19 @@ async function lockDoctor(tx: Tx, doctorId: string) {
  * miss a booking the previous lock holder just committed. FOR UPDATE reads the
  * latest committed rows on both MySQL and TiDB.
  */
-export async function assertSlotFree(tx: Tx, doctorId: string, start: Date, end: Date, excludeId?: string) {
+export async function assertSlotFree(
+  tx: Tx,
+  doctorId: string,
+  start: Date,
+  end: Date,
+  excludeId?: string,
+) {
   const [clash] = await tx
-    .select({ id: appointments.id, startTime: appointments.startTime, endTime: appointments.endTime })
+    .select({
+      id: appointments.id,
+      startTime: appointments.startTime,
+      endTime: appointments.endTime,
+    })
     .from(appointments)
     .where(
       and(
@@ -315,9 +432,16 @@ export async function assertSlotFree(tx: Tx, doctorId: string, start: Date, end:
  * doctor lock and extend the hold, so the patient never pays for a slot that
  * was released and re-booked in the meantime.
  */
-export async function reserveSlotForPayment(appointmentId: string, holdMinutes = env.BOOKING_HOLD_MINUTES) {
+export async function reserveSlotForPayment(
+  appointmentId: string,
+  holdMinutes = env.BOOKING_HOLD_MINUTES,
+) {
   await db.transaction(async (tx) => {
-    const [row] = await tx.select().from(appointments).where(eq(appointments.id, appointmentId)).limit(1);
+    const [row] = await tx
+      .select()
+      .from(appointments)
+      .where(eq(appointments.id, appointmentId))
+      .limit(1);
     if (!row) throw notFound('Appointment');
     if (row.doctorId) {
       await lockDoctor(tx, row.doctorId);
@@ -364,7 +488,12 @@ function serializeAppointment(
     status: a.status,
     complaint: a.complaint,
     symptoms: a.symptoms,
-    package: { id: a.packageId, name: a.packageLabel, type: a.packageType, features: a.packageFeatures },
+    package: {
+      id: a.packageId,
+      name: a.packageLabel,
+      type: a.packageType,
+      features: a.packageFeatures,
+    },
     startTime: a.startTime,
     endTime: a.endTime,
     price: a.price,
@@ -394,14 +523,20 @@ export type AppointmentView = ReturnType<typeof serializeAppointment>;
 
 function baseQuery() {
   return db
-    .select({ appointment: appointments, doctor: summaryOf(doctorUser), patient: summaryOf(patientUser) })
+    .select({
+      appointment: appointments,
+      doctor: summaryOf(doctorUser),
+      patient: summaryOf(patientUser),
+    })
     .from(appointments)
     .leftJoin(doctorUser, eq(doctorUser.id, appointments.doctorId))
     .innerJoin(patientUser, eq(patientUser.id, appointments.userId));
 }
 
 const participantFilter = (viewer: { userId: string; role: UserRole }) =>
-  viewer.role === 'doctor' ? eq(appointments.doctorId, viewer.userId) : eq(appointments.userId, viewer.userId);
+  viewer.role === 'doctor'
+    ? eq(appointments.doctorId, viewer.userId)
+    : eq(appointments.userId, viewer.userId);
 
 export async function listAppointments(
   viewer: { userId: string; role: UserRole },
@@ -421,12 +556,12 @@ export async function listAppointments(
   return rows.map((row) => serializeAppointment(row, viewer.role === 'doctor'));
 }
 
-/** Paid, upcoming open requests that any doctor may accept. */
-export async function listOpenRequests(query: { limit: number; offset: number }) {
+/** Paid, upcoming requests awaiting acceptance: unassigned ones plus those booked with this doctor. */
+export async function listOpenRequests(doctorId: string, query: { limit: number; offset: number }) {
   const rows = await baseQuery()
     .where(
       and(
-        isNull(appointments.doctorId),
+        or(isNull(appointments.doctorId), eq(appointments.doctorId, doctorId)),
         eq(appointments.status, 'pending'),
         eq(appointments.isPaid, true),
         gt(appointments.endTime, new Date()),
@@ -438,10 +573,14 @@ export async function listOpenRequests(query: { limit: number; offset: number })
   return rows.map((row) => serializeAppointment(row, true));
 }
 
-export async function getAppointmentForUser(viewer: { userId: string; role: UserRole }, appointmentId: string) {
+export async function getAppointmentForUser(
+  viewer: { userId: string; role: UserRole },
+  appointmentId: string,
+) {
   const [row] = await baseQuery().where(eq(appointments.id, appointmentId)).limit(1);
   if (!row || row.appointment.status === 'deleted') throw notFound('Appointment');
-  const isParticipant = row.appointment.userId === viewer.userId || row.appointment.doctorId === viewer.userId;
+  const isParticipant =
+    row.appointment.userId === viewer.userId || row.appointment.doctorId === viewer.userId;
   // Doctors may view an open request before accepting it.
   const isOpenForDoctor = viewer.role === 'doctor' && row.appointment.doctorId === null;
   if (!isParticipant && !isOpenForDoctor) throw notFound('Appointment');
@@ -450,7 +589,11 @@ export async function getAppointmentForUser(viewer: { userId: string; role: User
 
 /** Loads the raw row and asserts the caller is a participant. */
 export async function requireParticipant(appointmentId: string, userId: string) {
-  const [row] = await db.select().from(appointments).where(eq(appointments.id, appointmentId)).limit(1);
+  const [row] = await db
+    .select()
+    .from(appointments)
+    .where(eq(appointments.id, appointmentId))
+    .limit(1);
   if (!row || row.status === 'deleted') throw notFound('Appointment');
   if (row.userId !== userId && row.doctorId !== userId) throw notFound('Appointment');
   return row;
@@ -460,7 +603,10 @@ export async function requireParticipant(appointmentId: string, userId: string) 
 export async function deleteAppointment(userId: string, appointmentId: string) {
   const row = await requireParticipant(appointmentId, userId);
   if (row.userId !== userId) throw forbidden('Only the patient can remove this appointment');
-  await db.update(appointments).set({ status: 'deleted' }).where(eq(appointments.id, appointmentId));
+  await db
+    .update(appointments)
+    .set({ status: 'deleted' })
+    .where(eq(appointments.id, appointmentId));
 }
 
 /**
@@ -471,24 +617,35 @@ export async function deleteAppointment(userId: string, appointmentId: string) {
 export async function acceptAppointment(doctorId: string, appointmentId: string) {
   const patientId = await db.transaction(async (tx) => {
     const doctor = await lockDoctor(tx, doctorId);
-    const [row] = await tx.select().from(appointments).where(eq(appointments.id, appointmentId)).for('update');
+    const [row] = await tx
+      .select()
+      .from(appointments)
+      .where(eq(appointments.id, appointmentId))
+      .for('update');
     if (!row || row.status === 'deleted') throw notFound('Appointment');
-    if (row.doctorId && row.doctorId !== doctorId) throw conflict('ALREADY_TAKEN', 'Another doctor has accepted this appointment');
-    if (row.status !== 'pending') throw conflict('INVALID_TRANSITION', `Appointment is already ${row.status}`);
+    if (row.doctorId && row.doctorId !== doctorId)
+      throw conflict('ALREADY_TAKEN', 'Another doctor has accepted this appointment');
+    if (row.status !== 'pending')
+      throw conflict('INVALID_TRANSITION', `Appointment is already ${row.status}`);
     if (!row.isPaid) throw unprocessable('NOT_PAID', 'Appointment has not been paid for');
     if (row.userId === doctorId) throw forbidden();
 
     await assertSlotFree(tx, doctorId, row.startTime, row.endTime, row.id);
-    const earningFx = row.doctorEarningConverted === null && row.doctorEarning !== null && row.currency
-      ? await doctorEarningFx(row.currency, doctor.earningCurrency)
-      : null;
+    const earningFx =
+      row.doctorEarningConverted === null && row.doctorEarning !== null && row.currency
+        ? await doctorEarningFx(row.currency, doctor.earningCurrency)
+        : null;
     await tx
       .update(appointments)
       .set({
         doctorId,
         status: 'active',
         ...(earningFx && {
-          doctorEarningConverted: convertCurrencyAmount(row.doctorEarning!, earningFx.currency, earningFx.rate),
+          doctorEarningConverted: convertCurrencyAmount(
+            row.doctorEarning!,
+            earningFx.currency,
+            earningFx.rate,
+          ),
           doctorEarningCurrency: earningFx.currency,
           doctorEarningExchangeRate: earningFx.rate,
           doctorEarningConvertedAt: new Date(earningFx.capturedAt),
@@ -497,7 +654,11 @@ export async function acceptAppointment(doctorId: string, appointmentId: string)
       .where(eq(appointments.id, appointmentId));
     return row.userId;
   });
-  realtime.toUser(patientId, 'appointment:updated', { id: appointmentId, status: 'active', isPaid: true });
+  realtime.toUser(patientId, 'appointment:updated', {
+    id: appointmentId,
+    status: 'active',
+    isPaid: true,
+  });
   void emailAppointmentUpdate(appointmentId, 'accepted');
   return getAppointmentForUser({ userId: doctorId, role: 'doctor' }, appointmentId);
 }
@@ -511,22 +672,38 @@ const DOCTOR_TRANSITIONS: Record<AppointmentStatus, AppointmentStatus[]> = {
 };
 
 /** Doctor lifecycle transitions after acceptance (complete, cancel). */
-export async function transitionByDoctor(doctorId: string, appointmentId: string, next: AppointmentStatus) {
+export async function transitionByDoctor(
+  doctorId: string,
+  appointmentId: string,
+  next: AppointmentStatus,
+) {
   const row = await requireParticipant(appointmentId, doctorId);
   if (row.doctorId !== doctorId) throw forbidden();
   if (!DOCTOR_TRANSITIONS[row.status].includes(next)) {
-    throw conflict('INVALID_TRANSITION', `Cannot move an appointment from ${row.status} to ${next}`);
+    throw conflict(
+      'INVALID_TRANSITION',
+      `Cannot move an appointment from ${row.status} to ${next}`,
+    );
   }
   const result = await db
     .update(appointments)
     .set({ status: next })
     .where(and(eq(appointments.id, appointmentId), eq(appointments.status, row.status)));
-  if (affectedRows(result) === 0) throw conflict('CONCURRENT_UPDATE', 'Appointment changed; reload and retry');
-  realtime.toUser(row.userId, 'appointment:updated', { id: row.id, status: next, isPaid: row.isPaid });
-  if (next === 'completed' || next === 'cancelled') void emailAppointmentUpdate(appointmentId, next);
+  if (affectedRows(result) === 0)
+    throw conflict('CONCURRENT_UPDATE', 'Appointment changed; reload and retry');
+  realtime.toUser(row.userId, 'appointment:updated', {
+    id: row.id,
+    status: next,
+    isPaid: row.isPaid,
+  });
+  if (next === 'completed' || next === 'cancelled')
+    void emailAppointmentUpdate(appointmentId, next);
   return getAppointmentForUser({ userId: doctorId, role: 'doctor' }, appointmentId);
 }
 
 export async function touchAppointment(appointmentId: string) {
-  await db.update(appointments).set({ updatedAt: sql`CURRENT_TIMESTAMP(3)` }).where(eq(appointments.id, appointmentId));
+  await db
+    .update(appointments)
+    .set({ updatedAt: sql`CURRENT_TIMESTAMP(3)` })
+    .where(eq(appointments.id, appointmentId));
 }

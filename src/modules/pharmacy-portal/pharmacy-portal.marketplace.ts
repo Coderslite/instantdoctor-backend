@@ -16,6 +16,7 @@ import {
 import { sendPush } from '../../integrations/push.js';
 import { issueLabel } from '../../integrations/mail/templates.js';
 import { badRequest, notFound } from '../../lib/errors.js';
+import { round2 } from '../../lib/money.js';
 import { createNotification } from '../notifications/notifications.service.js';
 import { runEffects, type Effect } from '../payments/effects.js';
 import { getFeePolicy, orderSurcharge } from '../pricing/fees.js';
@@ -32,6 +33,7 @@ import {
   storeStatus,
 } from '../pharmacy/marketplace.js';
 import { settleOrder } from '../payouts/payouts.ledger.js';
+import { prescriptionsForOrder } from '../prescriptions/prescriptions.service.js';
 
 type Pharmacy = typeof pharmacies.$inferSelect;
 type OrderStatus = (typeof orders.$inferSelect)['status'];
@@ -201,12 +203,14 @@ export async function actOnOrder(pharmacyId: string, id: string, input: OrderAct
       case 'cancel': {
         expect(order, ['pending', 'processing'], 'cancelled');
         await tx.update(orders).set({ status: 'cancelled', cancelReason: input.reason }).where(eq(orders.id, id));
-        // Refund what the customer paid for this order: goods, delivery and
-        // its share of the service charge, to their Instant Doctor wallet.
+        // Refund what the customer paid for this order: goods (less any HMO
+        // share, which is simply never billed), delivery and its share of the
+        // service charge, to their Instant Doctor wallet.
+        const paidGoods = round2(order.subtotal - order.hmoAmount);
         let checkoutSurcharge: number;
         if (order.checkoutId) {
           const [checkout] = await tx
-            .select({ subtotal: orderCheckouts.subtotal })
+            .select({ subtotal: orderCheckouts.subtotal, hmoAmount: orderCheckouts.hmoAmount })
             .from(orderCheckouts)
             .where(eq(orderCheckouts.id, order.checkoutId))
             .limit(1);
@@ -222,22 +226,29 @@ export async function actOnOrder(pharmacyId: string, id: string, input: OrderAct
             )
             .orderBy(desc(payments.paidAt))
             .limit(1);
+          const checkoutGoods = checkout ? round2(checkout.subtotal - checkout.hmoAmount) : 0;
           checkoutSurcharge =
-            checkout && payment && checkout.subtotal > 0
-              ? Math.round((payment.surcharge * order.subtotal / checkout.subtotal) * 100) / 100
-              : orderSurcharge(order.subtotal, await getFeePolicy(tx));
+            checkout && payment && checkoutGoods > 0
+              ? Math.round((payment.surcharge * paidGoods / checkoutGoods) * 100) / 100
+              : payment
+                ? 0
+                : orderSurcharge(paidGoods, await getFeePolicy(tx));
         } else {
-          checkoutSurcharge = orderSurcharge(order.subtotal, await getFeePolicy(tx));
+          checkoutSurcharge = orderSurcharge(paidGoods, await getFeePolicy(tx));
         }
-        const refund = Math.round((order.totalAmount + checkoutSurcharge) * 100) / 100;
-        await credit(tx, {
-          userId: order.userId,
-          amount: refund,
-          title: `Refund for cancelled order ${order.trackingId}`,
-        });
+        const refund = Math.round((order.totalAmount - order.hmoAmount + checkoutSurcharge) * 100) / 100;
+        if (refund > 0)
+          await credit(tx, {
+            userId: order.userId,
+            amount: refund,
+            title: `Refund for cancelled order ${order.trackingId}`,
+          });
         await recordOrderEvent(tx, id, 'cancelled', 'pharmacy', `Cancelled: ${input.reason}`);
         return customerOrderUpdate(tx, id, 'cancelled', {
-          note: `Reason: ${input.reason}. ${formatNaira(refund)} has been refunded to your Instant Doctor wallet.`,
+          note:
+            refund > 0
+              ? `Reason: ${input.reason}. ${formatNaira(refund)} has been refunded to your Instant Doctor wallet.`
+              : `Reason: ${input.reason}. Nothing was charged to you, and your HMO won’t be billed.`,
         });
       }
     }
@@ -275,6 +286,8 @@ export async function orderDetail(pharmacyId: string, id: string) {
     events,
     review: review ?? null,
     issues: issues.map((i) => ({ ...i, label: issueLabel(i.category) })),
+    /** E-prescriptions this order dispenses, for the pharmacist to check before accepting. */
+    prescriptions: await prescriptionsForOrder(id),
   };
 }
 

@@ -39,6 +39,11 @@ export function createApp(): Express {
   // Webhooks need the raw body for signature verification: mount before JSON parsing.
   app.use('/api/v1/webhooks', webhooksRouter);
 
+  // An HMO member list can hold up to 20,000 rows (a few MB); every other body stays small.
+  app.use(
+    ['/api/v1/admin/hmos/:hmoId/enrollees/import', '/api/v1/hmo-portal/enrollees/import'],
+    express.json({ limit: '8mb' }),
+  );
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/health', async (_req, res) => {

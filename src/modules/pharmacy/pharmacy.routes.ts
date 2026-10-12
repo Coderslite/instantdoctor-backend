@@ -35,7 +35,7 @@ pharmacyRouter.get('/products/:id', async (req, res) => {
 
 /** Price a cart (delivery fees, surcharge) without creating anything. */
 pharmacyRouter.post('/orders/quote', async (req, res) => {
-  res.json(await service.quoteCart(parse(schemas.cartSchema, req.body)));
+  res.json(await service.quoteCart(parse(schemas.cartSchema, req.body), currentUser(req).userId));
 });
 
 /** Create a checkout awaiting payment. Requires an `Idempotency-Key` header. */

@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import type { z } from 'zod';
-import { db } from '../../db/client.js';
+import { db, type Tx } from '../../db/client.js';
 import {
   orderCheckouts,
   orderEvents,
@@ -25,6 +25,10 @@ import { getFeePolicy, orderSurcharge } from '../pricing/fees.js';
 import type { cartSchema, checkoutSchema } from './pharmacy.schemas.js';
 import { resolveFileUrl } from '../files/files.service.js';
 import { settleOrder } from '../payouts/payouts.ledger.js';
+import { confirmCheckout } from '../payments/fulfillment.js';
+import { runEffects, type Effect } from '../payments/effects.js';
+import { coverageFor, membershipFor, recordClaim } from '../hmo/hmo.coverage.js';
+import { checkPrescribedLines } from '../prescriptions/prescriptions.service.js';
 
 /** Pharmacy catalogue prices are in NGN. */
 export const PHARMACY_CURRENCY = 'NGN';
@@ -98,17 +102,48 @@ export function deliveryFeeFor(pharmacy: Pick<Pharmacy, 'latitude' | 'longitude'
   return round2(km * pharmacy.deliveryFeePerKm);
 }
 
-/** Prices a cart from live catalogue data, grouped into one order per pharmacy. */
-export async function priceCart(input: z.infer<typeof cartSchema>) {
+type CartLine = {
+  product: typeof products.$inferSelect;
+  quantity: number;
+  /** The prescribed medicine this line dispenses, if any. */
+  prescriptionItemId: string | null;
+  prescriptionId: string | null;
+};
+
+/**
+ * Prices a cart from live catalogue data, grouped into one order per pharmacy.
+ *
+ * Lines that dispense an e-prescription are checked against it, and for an HMO
+ * member those lines (never delivery) are priced by their plan's medicines
+ * rule: `hmoAmount` is billed to the HMO and the customer pays the rest. The
+ * pharmacy's earning is always on the full price. Pass `tx` when creating the
+ * order, so prescriptions are locked while their quantity is taken.
+ */
+export async function priceCart(input: z.infer<typeof cartSchema>, userId?: string, tx?: Tx) {
+  const executor = tx ?? db;
   const ids = input.items.map((i) => i.productId);
-  const rows = await db
+  const rows = await executor
     .select({ product: products, pharmacy: pharmacies })
     .from(products)
     .innerJoin(pharmacies, eq(pharmacies.id, products.pharmacyId))
     .where(and(inArray(products.id, ids), ne(products.status, 'deleted'), ne(pharmacies.status, 'deleted')));
   const byId = new Map(rows.map((r) => [r.product.id, r]));
 
-  const groups = new Map<string, { pharmacy: Pharmacy; lines: Array<{ product: typeof products.$inferSelect; quantity: number }> }>();
+  const prescribed = input.items.filter((i) => i.prescriptionItemId);
+  if (prescribed.length && !userId) throw forbidden('Sign in to order a prescription');
+  const prescriptionItemsById = userId
+    ? await checkPrescribedLines(
+        userId,
+        prescribed.map((i) => ({
+          prescriptionItemId: i.prescriptionItemId!,
+          productName: byId.get(i.productId)?.product.name ?? '',
+          quantity: i.quantity,
+        })),
+        tx,
+      )
+    : new Map();
+
+  const groups = new Map<string, { pharmacy: Pharmacy; lines: CartLine[] }>();
   for (const item of input.items) {
     const row = byId.get(item.productId);
     if (!row) throw badRequest('Some products are unavailable', [{ path: 'items', message: `${item.productId} not found` }]);
@@ -119,11 +154,22 @@ export async function priceCart(input: z.infer<typeof cartSchema>) {
       });
     }
     const group = groups.get(row.pharmacy.id) ?? { pharmacy: row.pharmacy, lines: [] };
-    group.lines.push({ product: row.product, quantity: item.quantity });
+    group.lines.push({
+      product: row.product,
+      quantity: item.quantity,
+      prescriptionItemId: item.prescriptionItemId ?? null,
+      prescriptionId: item.prescriptionItemId
+        ? (prescriptionItemsById.get(item.prescriptionItemId)?.prescriptionId ?? null)
+        : null,
+    });
     groups.set(row.pharmacy.id, group);
   }
 
-  const pharmacyOrders = [...groups.values()].map(({ pharmacy, lines }) => {
+  const membership = userId && prescribed.length ? await membershipFor(userId, executor) : null;
+  // Cover priced for earlier pharmacies in this cart, so the allowance is shared across them.
+  const pending = { uses: 0, amount: 0 };
+  const pharmacyOrders = [];
+  for (const { pharmacy, lines } of groups.values()) {
     const store = storeStatus(pharmacy);
     if (!store.open) {
       throw unprocessable('PHARMACY_CLOSED', `${pharmacy.name} isn’t taking orders right now (${store.label})`, {
@@ -134,25 +180,72 @@ export async function priceCart(input: z.infer<typeof cartSchema>) {
     const deliveryFee = deliveryFeeFor(pharmacy, input.location);
     if (deliveryFee === null) throw unprocessable('PHARMACY_NOT_DELIVERABLE', `${pharmacy.name} has no delivery location set`);
     const subtotal = round2(lines.reduce((sum, l) => sum + l.product.amount * l.quantity, 0));
-    return { pharmacy, lines, subtotal, deliveryFee, totalAmount: round2(subtotal + deliveryFee) };
-  });
+    const prescribedAmount = round2(
+      lines.filter((l) => l.prescriptionItemId).reduce((sum, l) => sum + l.product.amount * l.quantity, 0),
+    );
+    const check =
+      membership && prescribedAmount > 0
+        ? await coverageFor(userId!, 'medicines', null, prescribedAmount, {
+            membership,
+            executor,
+            pending: { ...pending },
+            enforce: Boolean(tx),
+          })
+        : null;
+    const hmo = check?.decision ?? null;
+    if (hmo) {
+      pending.uses += 1;
+      pending.amount = round2(pending.amount + hmo.hmoAmount);
+    }
+    const hmoAmount = hmo?.hmoAmount ?? 0;
+    pharmacyOrders.push({
+      pharmacy,
+      lines,
+      subtotal,
+      deliveryFee,
+      totalAmount: round2(subtotal + deliveryFee),
+      prescribedAmount,
+      prescriptionId: lines.find((l) => l.prescriptionId)?.prescriptionId ?? null,
+      hmoAmount,
+      hmo,
+      hmoNotice: check && !hmo ? { hmoName: check.membership?.hmo.name ?? null, notice: check.notice } : null,
+    });
+  }
 
   const subtotal = round2(pharmacyOrders.reduce((s, o) => s + o.subtotal, 0));
   const deliveryFee = round2(pharmacyOrders.reduce((s, o) => s + o.deliveryFee, 0));
-  const surcharge = orderSurcharge(subtotal, await getFeePolicy());
+  const hmoAmount = round2(pharmacyOrders.reduce((s, o) => s + o.hmoAmount, 0));
+  // The service charge is on what the customer pays for goods, not on the HMO's share.
+  const surcharge = orderSurcharge(round2(subtotal - hmoAmount), await getFeePolicy(executor));
   return {
     currency: PHARMACY_CURRENCY,
     subtotal,
     deliveryFee,
+    hmoAmount,
     surcharge,
     totalAmount: round2(subtotal + deliveryFee),
-    amountDue: round2(subtotal + deliveryFee + surcharge),
+    amountDue: round2(subtotal - hmoAmount + deliveryFee + surcharge),
     orders: pharmacyOrders,
   };
 }
 
-export async function quoteCart(input: z.infer<typeof cartSchema>) {
-  const priced = await priceCart(input);
+const hmoQuote = (o: Awaited<ReturnType<typeof priceCart>>['orders'][number]) =>
+  o.hmo
+    ? {
+        covered: true,
+        hmoName: o.hmo.membership.hmo.name,
+        summary: o.hmo.summary,
+        prescribedAmount: o.prescribedAmount,
+        hmoAmount: o.hmoAmount,
+        patientAmount: o.hmo.patientAmount,
+        allowance: o.hmo.allowance,
+      }
+    : o.hmoNotice
+      ? { covered: false, hmoName: o.hmoNotice.hmoName, notice: o.hmoNotice.notice, prescribedAmount: o.prescribedAmount }
+      : null;
+
+export async function quoteCart(input: z.infer<typeof cartSchema>, userId?: string) {
+  const priced = await priceCart(input, userId);
   return {
     ...priced,
     orders: priced.orders.map((o) => ({
@@ -161,6 +254,8 @@ export async function quoteCart(input: z.infer<typeof cartSchema>) {
       subtotal: o.subtotal,
       deliveryFee: o.deliveryFee,
       totalAmount: o.totalAmount,
+      hmoAmount: o.hmoAmount,
+      hmo: hmoQuote(o),
     })),
   };
 }
@@ -172,30 +267,38 @@ export async function createCheckout(userId: string, input: z.infer<typeof check
     if (existing) return { checkout: existing, created: false };
   }
 
-  const priced = await priceCart(input);
   const checkoutId = newId();
+  let effects: Effect[] = [];
   try {
-    await db.transaction(async (tx) => {
+    effects = await db.transaction(async (tx) => {
+      // Priced inside the transaction: prescriptions and the HMO allowance are locked and re-checked.
+      const priced = await priceCart(input, userId, tx);
       await tx.insert(orderCheckouts).values({
         id: checkoutId,
         userId,
         subtotal: priced.subtotal,
         deliveryFee: priced.deliveryFee,
         totalAmount: priced.totalAmount,
+        hmoAmount: priced.hmoAmount,
         currency: priced.currency,
         idempotencyKey: idempotencyKey ?? null,
       });
       for (const o of priced.orders) {
         const orderId = newId();
+        const claimId = o.hmo ? newId() : null;
+        const trackingId = randomCode(8);
         await tx.insert(orders).values({
           id: orderId,
           checkoutId,
           userId,
           pharmacyId: o.pharmacy.id,
-          trackingId: randomCode(8),
+          trackingId,
           subtotal: o.subtotal,
           deliveryFee: o.deliveryFee,
           totalAmount: o.totalAmount,
+          hmoAmount: o.hmoAmount,
+          hmoClaimId: claimId,
+          prescriptionId: o.prescriptionId,
           address: input.address,
           latitude: input.location.latitude,
           longitude: input.location.longitude,
@@ -205,6 +308,7 @@ export async function createCheckout(userId: string, input: z.infer<typeof check
             id: newId(),
             orderId,
             productId: l.product.id,
+            prescriptionItemId: l.prescriptionItemId,
             name: l.product.name,
             unitPrice: l.product.amount,
             discount: l.product.discount,
@@ -212,7 +316,20 @@ export async function createCheckout(userId: string, input: z.infer<typeof check
             image: l.product.images[0] ?? null,
           })),
         );
+        if (o.hmo && claimId) {
+          const count = o.lines.filter((l) => l.prescriptionItemId).length;
+          await recordClaim(tx, {
+            id: claimId,
+            userId,
+            decision: o.hmo,
+            orderId,
+            description: `Prescribed medicines · ${count} item${count === 1 ? '' : 's'} from ${o.pharmacy.name} (order ${trackingId})`,
+          });
+        }
       }
+      // Nothing left for the customer to pay (fully covered, free delivery): confirm now.
+      if (priced.amountDue <= 0) return (await confirmCheckout(tx, checkoutId)).effects;
+      return [];
     });
   } catch (err) {
     if (idempotencyKey && isDuplicateKeyError(err)) {
@@ -222,6 +339,7 @@ export async function createCheckout(userId: string, input: z.infer<typeof check
     // An 8-char tracking id collision (~1 in 10^12) surfaces as a retryable 5xx.
     throw err;
   }
+  await runEffects(effects);
   return { checkout: (await getCheckout(userId, checkoutId))!, created: true };
 }
 
@@ -241,11 +359,11 @@ async function getCheckout(userId: string, checkoutId: string) {
     .where(and(eq(orderCheckouts.id, checkoutId), eq(orderCheckouts.userId, userId)));
   if (!checkout) return null;
   const checkoutOrders = await attachItems(await db.select().from(orders).where(eq(orders.checkoutId, checkoutId)));
-  const surcharge = orderSurcharge(checkout.subtotal, await getFeePolicy());
+  const surcharge = orderSurcharge(round2(checkout.subtotal - checkout.hmoAmount), await getFeePolicy());
   return {
     ...checkout,
     surcharge,
-    amountDue: round2(checkout.totalAmount + surcharge),
+    amountDue: checkout.status === 'paid' ? 0 : round2(checkout.totalAmount - checkout.hmoAmount + surcharge),
     orders: checkoutOrders,
   };
 }

@@ -188,8 +188,11 @@ export function preview(input: {
     signatureName: input.signatureName || 'Your name',
     signatureTitle: input.signatureTitle || null,
   };
-  // An organisation with no contact name is addressed "Dear Sir/Madam", as the real letter will be.
-  const name = input.recipientName?.trim() || (input.recipientOrganization ? '' : 'Ada Okafor');
+  // A real recipient with no name (or an organisation with no contact) is addressed
+  // "Dear Sir/Madam", as the sent letter will be; the sample name is only for an empty recipient list.
+  const name =
+    input.recipientName?.trim() ||
+    (input.recipientOrganization || input.recipientEmail ? '' : 'Ada Okafor');
   return {
     html: renderLetter(letter, {
       email: input.recipientEmail || 'recipient@example.com',

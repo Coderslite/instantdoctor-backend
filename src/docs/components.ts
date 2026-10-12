@@ -314,13 +314,34 @@ export const MessagePage = z
   })
   .meta({ id: 'MessagePage' });
 
+export const PrescriptionItem = z
+  .object({
+    id,
+    name: z.string(),
+    strength: z.string().nullable(),
+    form: z.string().nullable(),
+    directions: z.string(),
+    durationDays: z.number().int().nullable(),
+    quantity: z.number().int().meta({ description: 'Units (packs) that may be dispensed in total.' }),
+    dispensed: z.number().int(),
+    remaining: z.number().int(),
+  })
+  .meta({ id: 'PrescriptionItem' });
+
 export const Prescription = z
   .object({
     id,
     appointmentId: id,
     userId: id,
     doctorId: id,
-    prescription: z.string(),
+    doctorName: z.string().nullable(),
+    prescription: z.string().meta({ description: 'Readable text of the whole prescription.' }),
+    notes: z.string().nullable(),
+    code: z.string().nullable().meta({ description: 'e.g. RX-7KQ2M9; null on legacy text-only prescriptions.' }),
+    expiresAt: nullableDateTime,
+    isExpired: z.boolean(),
+    canOrder: z.boolean().meta({ description: 'Medicines can still be ordered from a pharmacy.' }),
+    items: z.array(PrescriptionItem),
     seen: z.boolean(),
     createdAt: dateTime,
   })
@@ -607,6 +628,7 @@ export const CartQuote = z
     deliveryFee: money,
     surcharge: money,
     totalAmount: money,
+    hmoAmount: money.meta({ description: 'Prescribed medicines billed to the customer’s HMO.' }),
     amountDue: money.meta({ description: 'What the customer will be charged.' }),
     orders: z.array(
       z.object({
@@ -615,6 +637,11 @@ export const CartQuote = z
         subtotal: money,
         deliveryFee: money,
         totalAmount: money,
+        hmoAmount: money,
+        hmo: z
+          .record(z.string(), z.unknown())
+          .nullable()
+          .meta({ description: 'HMO cover of the prescribed lines: covered, hmoName, summary, hmoAmount, allowance — or notice when not covered.' }),
       }),
     ),
   })

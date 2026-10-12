@@ -179,10 +179,11 @@ async function resolvePayable(
         .limit(1);
       if (!c) throw notFound('Checkout');
       if (c.status !== 'awaiting_payment') throw conflict('ALREADY_PAID', 'This order has already been paid for');
+      // The customer pays everything except what their HMO covers.
       return {
         purposeRefId: c.id,
-        baseAmount: c.totalAmount,
-        surcharge: orderSurcharge(c.subtotal, feePolicy),
+        baseAmount: round2(c.totalAmount - c.hmoAmount),
+        surcharge: orderSurcharge(round2(c.subtotal - c.hmoAmount), feePolicy),
         currency: c.currency,
         description: 'Pharmacy order',
       };

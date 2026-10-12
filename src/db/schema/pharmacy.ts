@@ -218,6 +218,8 @@ export const orderCheckouts = mysqlTable(
     subtotal: money('subtotal').notNull(),
     deliveryFee: money('delivery_fee').notNull(),
     totalAmount: money('total_amount').notNull(),
+    /** Part of the goods an HMO pays for (prescribed medicines); the customer pays totalAmount − hmoAmount. */
+    hmoAmount: money('hmo_amount').notNull().default(0),
     currency: varchar('currency', { length: 3 }).notNull(),
     status: mysqlEnum('status', ['awaiting_payment', 'paid', 'cancelled'])
       .notNull()
@@ -248,6 +250,11 @@ export const orders = mysqlTable(
     subtotal: money('subtotal').notNull(),
     deliveryFee: money('delivery_fee').notNull(),
     totalAmount: money('total_amount').notNull(),
+    /** Billed to the customer's HMO, not paid by them. The pharmacy's earning is unaffected. */
+    hmoAmount: money('hmo_amount').notNull().default(0),
+    hmoClaimId: id('hmo_claim_id'),
+    /** Set when the order dispenses an e-prescription. */
+    prescriptionId: id('prescription_id'),
     pharmacyEarning: money('pharmacy_earning'),
     platformEarning: money('platform_earning'),
     address: varchar('address', { length: 512 }),
@@ -279,13 +286,18 @@ export const orderItems = mysqlTable(
       .notNull()
       .references(() => orders.id, { onDelete: 'cascade' }),
     productId: id('product_id').references(() => products.id, { onDelete: 'set null' }),
+    /** The prescribed medicine this line dispenses; counts against its prescribed quantity. */
+    prescriptionItemId: id('prescription_item_id'),
     name: varchar('name', { length: 255 }).notNull(),
     unitPrice: money('unit_price').notNull(),
     discount: int('discount').notNull().default(0),
     quantity: int('quantity').notNull(),
     image: varchar('image', { length: 1024 }),
   },
-  (t) => [index('order_items_order_idx').on(t.orderId)],
+  (t) => [
+    index('order_items_order_idx').on(t.orderId),
+    index('order_items_prescription_item_idx').on(t.prescriptionItemId),
+  ],
 );
 
 /** Every status change on an order, with who made it — the tracking timeline. */

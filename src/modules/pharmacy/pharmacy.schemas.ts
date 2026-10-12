@@ -10,10 +10,21 @@ const location = z.object({ latitude: z.number().min(-90).max(90), longitude: z.
 
 export const cartSchema = z.object({
   items: z
-    .array(z.object({ productId: z.string().min(1).max(36), quantity: z.number().int().min(1).max(100) }))
+    .array(
+      z.object({
+        productId: z.string().min(1).max(36),
+        quantity: z.number().int().min(1).max(100),
+        /** Set when this line dispenses a medicine on the customer's e-prescription. */
+        prescriptionItemId: z.string().min(1).max(36).nullish(),
+      }),
+    )
     .min(1)
     .max(50)
-    .refine((items) => new Set(items.map((i) => i.productId)).size === items.length, 'Duplicate products in cart'),
+    .refine((items) => new Set(items.map((i) => i.productId)).size === items.length, 'Duplicate products in cart')
+    .refine((items) => {
+      const prescribed = items.flatMap((i) => (i.prescriptionItemId ? [i.prescriptionItemId] : []));
+      return new Set(prescribed).size === prescribed.length;
+    }, 'Each prescribed medicine can be in the cart once'),
   location,
 });
 

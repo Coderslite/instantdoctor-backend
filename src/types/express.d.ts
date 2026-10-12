@@ -1,3 +1,4 @@
+import type { HmoUserRole } from '../db/schema/hmo.js';
 import type { AdminRole, UserRole } from '../db/schema/users.js';
 
 declare global {
@@ -10,6 +11,13 @@ declare global {
         staffId?: string;
         role: 'owner' | 'manager' | 'pharmacist' | 'inventory_officer' | 'sales_assistant';
         mustChangePassword?: boolean;
+      };
+      hmoAuth?: {
+        hmoId: string;
+        userId: string;
+        name: string;
+        role: HmoUserRole;
+        mustChangePassword: boolean;
       };
       /** Validated Idempotency-Key, set by the `idempotent()` middleware. */
       idempotencyKey?: string;

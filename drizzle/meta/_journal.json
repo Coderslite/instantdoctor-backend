@@ -204,6 +204,27 @@
       "when": 1791620000000,
       "tag": "0028_pharmacy_payouts",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "5",
+      "when": 1791630000000,
+      "tag": "0029_hmo_partnerships",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "5",
+      "when": 1791640000000,
+      "tag": "0030_eprescriptions_hmo_medicines",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "5",
+      "when": 1791650000000,
+      "tag": "0031_hmo_portal",
+      "breakpoints": true
     }
   ]
 }

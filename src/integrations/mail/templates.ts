@@ -346,6 +346,8 @@ export function orderReceipt(input: {
   subtotal: string;
   deliveryFee: string;
   serviceCharge: string;
+  /** Prescribed medicines paid by the customer's HMO, e.g. "₦4,000 (Avon HMO)". */
+  hmoCovered?: string | null;
   total: string;
 }): RenderedMail {
   const cell = (html: string, opts = '') =>
@@ -363,6 +365,7 @@ export function orderReceipt(input: {
   const totals = detailsTable([
     ['Medicines', input.subtotal],
     ['Delivery', input.deliveryFee],
+    ...(input.hmoCovered ? [['Covered by your HMO', `− ${input.hmoCovered}`] as [string, string]] : []),
     ['Service charge', input.serviceCharge],
     ['Total paid', input.total],
   ]);
@@ -398,6 +401,7 @@ export function orderReceipt(input: {
     ]),
     `Medicines: ${input.subtotal}`,
     `Delivery: ${input.deliveryFee}`,
+    input.hmoCovered ? `Covered by your HMO: − ${input.hmoCovered}` : null,
     `Service charge: ${input.serviceCharge}`,
     `Total paid: ${input.total}`,
   ]);

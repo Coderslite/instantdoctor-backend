@@ -11,6 +11,7 @@ interface AccessClaims {
 const ISSUER = 'instantdoctor-api';
 const ADMIN_ISSUER = 'instantdoctor-admin-api';
 const PHARMACY_ISSUER = 'instantdoctor-pharmacy-api';
+const HMO_ISSUER = 'instantdoctor-hmo-api';
 
 export function signAccessToken(claims: AccessClaims): string {
   return jwt.sign({ role: claims.role }, env.JWT_ACCESS_SECRET, {
@@ -97,5 +98,46 @@ export function verifyPharmacyAccessToken(token: string): { sub: string; staffId
     throw unauthorized('Invalid pharmacy access token');
   } catch {
     throw unauthorized('Invalid or expired pharmacy access token');
+  }
+}
+
+interface HmoAccessClaims {
+  /** The HMO portal user. */
+  sub: string;
+  hmoId: string;
+  sessionVersion: number;
+}
+
+export function signHmoAccessToken(claims: HmoAccessClaims): string {
+  return jwt.sign(
+    { role: 'hmo_user', hmoId: claims.hmoId, sessionVersion: claims.sessionVersion },
+    env.JWT_ACCESS_SECRET,
+    {
+      subject: claims.sub,
+      issuer: HMO_ISSUER,
+      algorithm: 'HS256',
+      expiresIn: env.JWT_ACCESS_TTL as jwt.SignOptions['expiresIn'],
+    },
+  );
+}
+
+export function verifyHmoAccessToken(token: string): HmoAccessClaims {
+  try {
+    const payload = jwt.verify(token, env.JWT_ACCESS_SECRET, {
+      issuer: HMO_ISSUER,
+      algorithms: ['HS256'],
+    }) as jwt.JwtPayload;
+    if (
+      !payload.sub ||
+      payload.role !== 'hmo_user' ||
+      typeof payload.hmoId !== 'string' ||
+      !Number.isSafeInteger(payload.sessionVersion) ||
+      payload.sessionVersion < 0
+    ) {
+      throw unauthorized('Invalid HMO access token');
+    }
+    return { sub: payload.sub, hmoId: payload.hmoId, sessionVersion: payload.sessionVersion };
+  } catch {
+    throw unauthorized('Invalid or expired HMO access token');
   }
 }

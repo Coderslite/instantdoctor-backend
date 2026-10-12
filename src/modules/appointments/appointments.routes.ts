@@ -1,3 +1,5 @@
+import * as prescriptionService from '../prescriptions/prescriptions.service.js';
+import { prescriptionSchema } from '../prescriptions/prescriptions.schemas.js';
 import { Router } from 'express';
 import { parse } from '../../lib/validation.js';
 import { authenticate, currentUser, requireRole } from '../../middleware/authenticate.js';
@@ -38,7 +40,7 @@ appointmentsRouter.get('/', async (req, res) => {
 /** Doctors: paid open requests awaiting acceptance. */
 appointmentsRouter.get('/open', requireRole('doctor'), async (req, res) => {
   const query = parse(schemas.listAppointmentsQuery, req.query);
-  res.json({ items: await appointments.listOpenRequests(query), limit: query.limit, offset: query.offset });
+  res.json({ items: await appointments.listOpenRequests(currentUser(req).userId, query), limit: query.limit, offset: query.offset });
 });
 
 appointmentsRouter.get('/:id', async (req, res) => {
@@ -94,21 +96,21 @@ appointmentsRouter.get('/:id/messages/unread-count', async (req, res) => {
 // ─── Prescriptions & review ──────────────────────────────────────────────────
 
 appointmentsRouter.get('/:id/prescriptions', async (req, res) => {
-  res.json({ items: await clinical.listPrescriptions(currentUser(req).userId, req.params.id) });
+  res.json({ items: await prescriptionService.listForAppointment(currentUser(req).userId, req.params.id) });
 });
 
 appointmentsRouter.post<{ id: string }>('/:id/prescriptions', requireRole('doctor'), async (req, res) => {
-  const input = parse(schemas.createPrescriptionSchema, req.body);
-  res.status(201).json(await clinical.createPrescription(currentUser(req).userId, req.params.id, input));
+  const input = parse(prescriptionSchema, req.body);
+  res.status(201).json(await prescriptionService.createPrescription(currentUser(req).userId, req.params.id, input));
 });
 
 appointmentsRouter.patch<{ id: string; prescriptionId: string }>('/:id/prescriptions/:prescriptionId', requireRole('doctor'), async (req, res) => {
-  const input = parse(schemas.createPrescriptionSchema, req.body);
-  res.json(await clinical.updatePrescription(currentUser(req).userId, req.params.id, req.params.prescriptionId, input));
+  const input = parse(prescriptionSchema, req.body);
+  res.json(await prescriptionService.updatePrescription(currentUser(req).userId, req.params.id, req.params.prescriptionId, input));
 });
 
 appointmentsRouter.delete<{ id: string; prescriptionId: string }>('/:id/prescriptions/:prescriptionId', requireRole('doctor'), async (req, res) => {
-  await clinical.deletePrescription(currentUser(req).userId, req.params.id, req.params.prescriptionId);
+  await prescriptionService.deletePrescription(currentUser(req).userId, req.params.id, req.params.prescriptionId);
   res.status(204).end();
 });
 

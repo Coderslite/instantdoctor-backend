@@ -156,6 +156,30 @@ describe('POST /api/v1/appointments/:id/accept', () => {
     results.filter((r) => r.status !== 200).forEach((r) => expect(r.body.error.code).toBe('ALREADY_TAKEN'));
   });
 
+  it('lists a paid booking with a chosen doctor as a request only that doctor can accept', async () => {
+    const packageId = await createPackage();
+    const patient = await createUser();
+    const chosen = await createDoctor();
+    const other = await createDoctor();
+    const booked = await book(patient.token, 'claim-assigned-01', {
+      packageId,
+      doctorId: chosen.id,
+      startTime: inHours(3),
+    });
+    await db.update(appointments).set({ isPaid: true }).where(eq(appointments.id, booked.body.id));
+
+    const mine = await api().get('/api/v1/appointments/open').set(auth(chosen.token)).expect(200);
+    expect(mine.body.items.map((a: { id: string }) => a.id)).toContain(booked.body.id);
+    const theirs = await api().get('/api/v1/appointments/open').set(auth(other.token)).expect(200);
+    expect(theirs.body.items.map((a: { id: string }) => a.id)).not.toContain(booked.body.id);
+
+    const accepted = await api()
+      .post(`/api/v1/appointments/${booked.body.id}/accept`)
+      .set(auth(chosen.token))
+      .expect(200);
+    expect(accepted.body).toMatchObject({ status: 'active' });
+  });
+
   it('refuses an unpaid request', async () => {
     const packageId = await createPackage();
     const patient = await createUser();

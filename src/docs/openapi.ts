@@ -9,6 +9,8 @@ import { paginationQuery } from '../lib/pagination.js';
 import { askQuestionSchema } from '../modules/anonymous/anonymous.schemas.js';
 import * as blog from '../modules/blog/blog.schemas.js';
 import * as mailCenter from '../modules/mail-center/mail-center.schemas.js';
+import * as hmo from '../modules/hmo/hmo.schemas.js';
+import * as hmoPortal from '../modules/hmo-portal/hmo-portal.schemas.js';
 import * as appointments from '../modules/appointments/appointments.schemas.js';
 import * as auth from '../modules/auth/auth.schemas.js';
 import { listDoctorsQuery } from '../modules/doctors/doctors.schemas.js';
@@ -458,7 +460,7 @@ op('get', '/appointments', {
 });
 op('get', '/appointments/open', {
   tag: 'Appointments',
-  summary: 'Paid open requests awaiting a doctor',
+  summary: 'Paid requests awaiting acceptance (unassigned or booked with me)',
   role: 'doctor',
   query: appointments.listAppointmentsQuery,
   ok: { 200: c.page(c.Appointment, 'Appointment') },
@@ -552,14 +554,48 @@ op('post', '/appointments/:id/prescriptions', {
   tag: 'Clinical',
   summary: 'Issue a prescription after a completed appointment (doctor only)',
   params: idParam,
-  body: z.object({ prescription: z.string().min(1).max(5000) }),
+  description: 'Send structured `items` (an e-prescription with a pharmacy code, valid 30 days) and optional `notes`.',
+  body: z.object({
+    prescription: z.string().max(5000).optional().meta({ description: 'Older clients: the whole prescription as text.' }),
+    notes: z.string().max(5000).nullish(),
+    items: z
+      .array(
+        z.object({
+          name: z.string().min(2).max(200),
+          strength: z.string().max(60).nullish(),
+          form: z.string().max(40).nullish(),
+          directions: z.string().min(2).max(500),
+          durationDays: z.number().int().min(1).max(365).nullish(),
+          quantity: z.number().int().min(1).max(100).default(1),
+        }),
+      )
+      .max(20)
+      .optional(),
+  }),
   ok: { 201: c.Prescription },
 });
 op('patch', '/appointments/:id/prescriptions/:prescriptionId', {
   tag: 'Clinical',
   summary: 'Correct a prescription (issuing doctor only)',
   params: z.object({ id: z.string(), prescriptionId: z.string() }),
-  body: z.object({ prescription: z.string().min(1).max(5000) }),
+  description: 'Items can no longer be changed once any have been ordered from a pharmacy (409 PRESCRIPTION_DISPENSED).',
+  body: z.object({
+    prescription: z.string().max(5000).optional().meta({ description: 'Older clients: the whole prescription as text.' }),
+    notes: z.string().max(5000).nullish(),
+    items: z
+      .array(
+        z.object({
+          name: z.string().min(2).max(200),
+          strength: z.string().max(60).nullish(),
+          form: z.string().max(40).nullish(),
+          directions: z.string().min(2).max(500),
+          durationDays: z.number().int().min(1).max(365).nullish(),
+          quantity: z.number().int().min(1).max(100).default(1),
+        }),
+      )
+      .max(20)
+      .optional(),
+  }),
   ok: { 200: c.Prescription },
 });
 op('delete', '/appointments/:id/prescriptions/:prescriptionId', {
@@ -567,6 +603,37 @@ op('delete', '/appointments/:id/prescriptions/:prescriptionId', {
   summary: 'Delete a prescription (issuing doctor only)',
   params: z.object({ id: z.string(), prescriptionId: z.string() }),
   ok: { 204: null },
+});
+op('get', '/prescriptions', {
+  tag: 'Clinical',
+  summary: 'My prescriptions, newest first',
+  query: z.object({ limit: z.number().int().optional(), offset: z.number().int().optional() }),
+  ok: { 200: c.ItemsOf(c.Prescription, 'Prescription') },
+});
+op('get', '/prescriptions/:id', {
+  tag: 'Clinical',
+  summary: 'One of my prescriptions, with what is left to dispense',
+  params: idParam,
+  ok: { 200: c.Prescription },
+});
+op('get', '/prescriptions/:id/pharmacies', {
+  tag: 'Clinical',
+  summary: 'Nearby pharmacies that stock the prescribed medicines',
+  description:
+    'For each pharmacy: matching products per prescribed medicine (best first), an estimated subtotal, delivery fee and what the patient’s HMO would cover. Add the chosen products to the cart with `prescriptionItemId`.',
+  params: idParam,
+  query: z.object({ latitude: z.number(), longitude: z.number(), radiusKm: z.number().optional() }),
+  ok: { 200: z.record(z.string(), z.unknown()) },
+  errors: { 422: 'NOT_DISPENSABLE | PRESCRIPTION_EXPIRED | PRESCRIPTION_FULFILLED' },
+});
+op('get', '/pharmacy-portal/prescriptions/:code', {
+  tag: 'Pharmacy portal',
+  summary: 'Verify a prescription code a patient shows the pharmacist',
+  description:
+    'Pharmacist or manager. Returns the prescriber, validity, medicines and how much of each is left to dispense. The patient is identified by first name and surname initial. Rate-limited to 60 checks an hour per pharmacy.',
+  params: z.object({ code: z.string() }),
+  ok: { 200: z.record(z.string(), z.unknown()) },
+  errors: { 404: 'Unknown code' },
 });
 op('post', '/prescriptions/:id/seen', {
   tag: 'Clinical',
@@ -739,9 +806,11 @@ op('get', '/products/:id', {
 op('post', '/orders/quote', {
   tag: 'Pharmacy',
   summary: 'Price a cart (delivery fees + surcharge) without ordering',
+  description:
+    'Lines with `prescriptionItemId` dispense an e-prescription; for HMO members their cost is priced by the plan’s medicines rule (`hmoAmount` is billed to the HMO, delivery never is).',
   body: pharmacy.cartSchema,
   ok: { 200: c.CartQuote },
-  errors: { 422: 'OUT_OF_STOCK | PHARMACY_NOT_DELIVERABLE' },
+  errors: { 422: 'OUT_OF_STOCK | PHARMACY_NOT_DELIVERABLE | PRESCRIPTION_EXPIRED | PRESCRIPTION_MISMATCH | PRESCRIPTION_QUANTITY_EXCEEDED' },
 });
 op('post', '/orders/checkout', {
   tag: 'Pharmacy',
@@ -1321,6 +1390,511 @@ op('get', '/admin/mail/:id', {
   errors: { 404: 'NOT_FOUND' },
 });
 
+// ─── HMO partnerships ────────────────────────────────────────────────────────
+
+const HMO_ADMIN =
+  'Requires an **admin** token; changes need the `admin` role. Every route is scoped to one HMO (`hmoId`); the HMO portal exposes the same data with the HMO taken from its login. Changes are recorded in the HMO’s activity trail.';
+const hmoParams = z.object({ hmoId: z.string() });
+const planParams = hmoParams.extend({ planId: z.string() });
+const anyJson = z.record(z.string(), z.unknown());
+op('get', '/hmo/partners', {
+  tag: 'HMO',
+  summary: 'Partner HMOs a patient can link to',
+  ok: {
+    200: c.ItemsOf(
+      z.object({ id: z.string(), name: z.string(), code: z.string(), logo: z.string().nullable() }),
+      'HmoPartner',
+    ),
+  },
+});
+op('get', '/hmo/me', {
+  tag: 'HMO',
+  summary: 'My HMO membership and what it covers',
+  description:
+    'Includes benefits with usage against limits, a lapsed membership, or a pending link request.',
+  ok: { 200: anyJson },
+});
+op('post', '/hmo/link', {
+  tag: 'HMO',
+  summary: 'Link my HMO',
+  description:
+    'Matches the enrollee code plus one detail (surname, phone or date of birth) against the HMO list. 200 = linked; 202 = queued for review. Rate limited.',
+  body: hmo.linkSchema,
+  ok: { 200: anyJson, 202: anyJson },
+  errors: {
+    404: 'NOT_FOUND — unknown or inactive HMO',
+    409: 'ENROLLEE_ALREADY_LINKED | ACCOUNT_ALREADY_LINKED',
+  },
+});
+op('delete', '/hmo/me', {
+  tag: 'HMO',
+  summary: 'Unlink my HMO',
+  ok: { 200: z.object({ unlinked: z.boolean() }) },
+});
+
+op('get', '/admin/hmos', {
+  tag: 'HMO admin',
+  summary: 'HMOs with member and unbilled totals',
+  description: HMO_ADMIN,
+  ok: { 200: c.ItemsOf(anyJson, 'AdminHmo') },
+});
+op('post', '/admin/hmos', {
+  tag: 'HMO admin',
+  summary: 'Add an HMO',
+  description: HMO_ADMIN,
+  body: hmo.hmoSchema,
+  ok: { 201: anyJson },
+  errors: { 403: 'FORBIDDEN', 409: 'HMO_CODE_TAKEN' },
+});
+op('get', '/admin/hmos/:hmoId', {
+  tag: 'HMO admin',
+  summary: 'An HMO with its plans and agreement rules',
+  description: HMO_ADMIN,
+  params: hmoParams,
+  ok: { 200: anyJson },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('patch', '/admin/hmos/:hmoId', {
+  tag: 'HMO admin',
+  summary: 'Update an HMO (pause or end the partnership here)',
+  description: HMO_ADMIN,
+  params: hmoParams,
+  body: hmo.updateHmoSchema,
+  ok: { 200: anyJson },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'HMO_CODE_TAKEN' },
+});
+op('post', '/admin/hmos/:hmoId/plans', {
+  tag: 'HMO admin',
+  summary: 'Add a plan',
+  description: HMO_ADMIN,
+  params: hmoParams,
+  body: hmo.planSchema,
+  ok: { 201: anyJson },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND' },
+});
+op('patch', '/admin/hmos/:hmoId/plans/:planId', {
+  tag: 'HMO admin',
+  summary: 'Update a plan',
+  description: HMO_ADMIN,
+  params: planParams,
+  body: hmo.updatePlanSchema,
+  ok: { 200: anyJson },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND' },
+});
+op('get', '/admin/hmos/:hmoId/plans/:planId/price-preview', {
+  tag: 'HMO admin',
+  summary: 'What every service costs under a plan',
+  description: `${HMO_ADMIN}\n\nPer consultation package and lab interpretation: standard price, patient pays, HMO billed, doctor earns.`,
+  params: planParams,
+  ok: { 200: anyJson },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('post', '/admin/hmos/:hmoId/plans/:planId/rules', {
+  tag: 'HMO admin',
+  summary: 'Add an agreement rule',
+  description: `${HMO_ADMIN}\n\nCoverage types: \`full\`, \`copay_fixed\`, \`copay_percent\`, \`discount_percent\`, \`fixed_price\`, \`not_covered\`. A package-specific rule overrides the plan-wide consultation rule.`,
+  params: planParams,
+  body: hmo.ruleSchema,
+  ok: { 201: anyJson },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'HMO_RULE_EXISTS' },
+});
+op('put', '/admin/hmos/:hmoId/plans/:planId/rules/:ruleId', {
+  tag: 'HMO admin',
+  summary: 'Replace an agreement rule',
+  description: HMO_ADMIN,
+  params: planParams.extend({ ruleId: z.string() }),
+  body: hmo.ruleSchema,
+  ok: { 200: anyJson },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'HMO_RULE_EXISTS' },
+});
+op('delete', '/admin/hmos/:hmoId/plans/:planId/rules/:ruleId', {
+  tag: 'HMO admin',
+  summary: 'Remove a rule (switched off instead if claims use it)',
+  description: HMO_ADMIN,
+  params: planParams.extend({ ruleId: z.string() }),
+  ok: { 200: anyJson },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND' },
+});
+op('get', '/admin/hmos/:hmoId/enrollees', {
+  tag: 'HMO admin',
+  summary: 'The HMO member list',
+  description: HMO_ADMIN,
+  params: hmoParams,
+  query: hmo.enrolleesQuery,
+  ok: { 200: anyJson },
+});
+op('post', '/admin/hmos/:hmoId/enrollees', {
+  tag: 'HMO admin',
+  summary: 'Add a member (linked at once if an account matches)',
+  description: HMO_ADMIN,
+  params: hmoParams,
+  body: hmo.enrolleeSchema,
+  ok: { 201: anyJson },
+  errors: { 403: 'FORBIDDEN', 409: 'ENROLLEE_CODE_TAKEN' },
+});
+op('post', '/admin/hmos/:hmoId/enrollees/import', {
+  tag: 'HMO admin',
+  summary: 'Import the HMO member list',
+  description: `${HMO_ADMIN}\n\nAdds new codes, updates known ones, optionally ends members missing from a full list, then links matching accounts. Row problems are returned in \`errors\`.`,
+  params: hmoParams,
+  body: hmo.importSchema,
+  ok: {
+    200: z.object({
+      created: z.number(),
+      updated: z.number(),
+      ended: z.number(),
+      matched: z.number(),
+      errors: z.array(anyJson),
+    }),
+  },
+  errors: { 403: 'FORBIDDEN' },
+});
+op('patch', '/admin/hmos/:hmoId/enrollees/:enrolleeId', {
+  tag: 'HMO admin',
+  summary: 'Update a member, or link/unlink an account',
+  description: HMO_ADMIN,
+  params: hmoParams.extend({ enrolleeId: z.string() }),
+  body: hmo.updateEnrolleeSchema,
+  ok: { 200: anyJson },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'ACCOUNT_ALREADY_LINKED' },
+});
+op('get', '/admin/hmos/:hmoId/claims', {
+  tag: 'HMO admin',
+  summary: 'Claims, with totals by status',
+  description: HMO_ADMIN,
+  params: hmoParams,
+  query: hmo.claimsQuery,
+  ok: { 200: anyJson },
+});
+op('patch', '/admin/hmos/:hmoId/claims/:claimId', {
+  tag: 'HMO admin',
+  summary: 'Reject, void or restore a claim',
+  description: HMO_ADMIN,
+  params: hmoParams.extend({ claimId: z.string() }),
+  body: hmo.claimUpdateSchema,
+  ok: { 200: anyJson },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'CLAIM_PAID | CLAIM_INVOICED' },
+});
+op('get', '/admin/hmos/:hmoId/invoices', {
+  tag: 'HMO admin',
+  summary: 'Invoices issued to the HMO',
+  description: HMO_ADMIN,
+  params: hmoParams,
+  ok: { 200: c.ItemsOf(anyJson, 'HmoInvoice') },
+});
+op('post', '/admin/hmos/:hmoId/invoices', {
+  tag: 'HMO admin',
+  summary: 'Invoice the billable claims of a period',
+  description: `${HMO_ADMIN}\n\nOnly claims whose service stands (paid, not cancelled) and that bill the HMO something are included.`,
+  params: hmoParams,
+  body: hmo.invoiceSchema,
+  ok: { 201: anyJson },
+  errors: { 403: 'FORBIDDEN', 422: 'NOTHING_TO_INVOICE | INVALID_PERIOD' },
+});
+op('get', '/admin/hmos/:hmoId/invoices/:invoiceId', {
+  tag: 'HMO admin',
+  summary: 'An invoice with its claims',
+  description: HMO_ADMIN,
+  params: hmoParams.extend({ invoiceId: z.string() }),
+  ok: { 200: anyJson },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('patch', '/admin/hmos/:hmoId/invoices/:invoiceId', {
+  tag: 'HMO admin',
+  summary: 'Mark an invoice paid, or cancel it',
+  description: HMO_ADMIN,
+  params: hmoParams.extend({ invoiceId: z.string() }),
+  body: hmo.invoiceUpdateSchema,
+  ok: { 200: anyJson },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'INVOICE_CLOSED' },
+});
+op('get', '/admin/hmo-link-requests', {
+  tag: 'HMO admin',
+  summary: '"Link my HMO" requests awaiting review',
+  description: HMO_ADMIN,
+  query: hmo.linkRequestsQuery,
+  ok: { 200: anyJson },
+});
+op('post', '/admin/hmo-link-requests/:id/approve', {
+  tag: 'HMO admin',
+  summary: 'Approve a link request against a member',
+  description: HMO_ADMIN,
+  params: idParam,
+  body: hmo.approveLinkSchema,
+  ok: { 200: z.object({ approved: z.boolean() }) },
+  errors: {
+    403: 'FORBIDDEN',
+    404: 'NOT_FOUND',
+    409: 'LINK_REQUEST_CLOSED | ENROLLEE_ALREADY_LINKED',
+  },
+});
+op('post', '/admin/hmo-link-requests/:id/reject', {
+  tag: 'HMO admin',
+  summary: 'Reject a link request',
+  description: HMO_ADMIN,
+  params: idParam,
+  body: hmo.rejectLinkSchema,
+  ok: { 200: z.object({ rejected: z.boolean() }) },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'LINK_REQUEST_CLOSED' },
+});
+
+const HmoPortalUser = z.object({
+  id: z.string(),
+  name: z.string(),
+  email: z.string(),
+  role: z.enum(['admin', 'manager', 'viewer']),
+  status: z.enum(['active', 'inactive']),
+  mustChangePassword: z.boolean(),
+  lastLoginAt: z.date().nullable(),
+  createdAt: z.date(),
+});
+const userParams = hmoParams.extend({ userId: z.string() });
+op('get', '/admin/hmos/:hmoId/users', {
+  tag: 'HMO admin',
+  summary: 'HMO portal accounts',
+  description: HMO_ADMIN,
+  params: hmoParams,
+  ok: { 200: c.ItemsOf(HmoPortalUser, 'HmoPortalUser') },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('post', '/admin/hmos/:hmoId/users', {
+  tag: 'HMO admin',
+  summary: 'Give someone at the HMO portal access',
+  description: `${HMO_ADMIN}\n\nThe password is temporary: the person must choose their own at first sign-in. Share it securely.`,
+  params: hmoParams,
+  body: hmo.hmoUserSchema,
+  ok: { 201: HmoPortalUser },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'EMAIL_TAKEN' },
+});
+op('patch', '/admin/hmos/:hmoId/users/:userId', {
+  tag: 'HMO admin',
+  summary: 'Change a portal account’s name, role or status',
+  description: `${HMO_ADMIN}\n\nDeactivating signs the person out everywhere. The HMO always keeps at least one active admin.`,
+  params: userParams,
+  body: hmo.updateHmoUserSchema,
+  ok: { 200: HmoPortalUser },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'LAST_ADMIN' },
+});
+op('post', '/admin/hmos/:hmoId/users/:userId/reset-password', {
+  tag: 'HMO admin',
+  summary: 'Set a temporary password for a portal account',
+  description: `${HMO_ADMIN}\n\nSigns the person out everywhere; they choose a new password at next sign-in.`,
+  params: userParams,
+  body: hmo.resetPasswordSchema,
+  ok: { 200: HmoPortalUser },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND' },
+});
+const HmoActivityPage = z.object({
+  items: z.array(
+    z.object({
+      id: z.string(),
+      actorType: z.enum(['hmo_user', 'admin', 'system']),
+      actorName: z.string(),
+      action: z.string().meta({ example: 'member.updated' }),
+      entityType: z.string().nullable(),
+      entityId: z.string().nullable(),
+      summary: z.string(),
+      details: anyJson.nullable(),
+      createdAt: z.date(),
+    }),
+  ),
+  total: z.number(),
+  limit: z.number(),
+  offset: z.number(),
+});
+op('get', '/admin/hmos/:hmoId/activity', {
+  tag: 'HMO admin',
+  summary: 'The HMO’s activity trail',
+  description: `${HMO_ADMIN}\n\nEvery change to the HMO’s members, team, agreement and billing — by its own people or by Instant Doctor staff. The HMO sees the same trail in its portal.`,
+  params: hmoParams,
+  query: hmo.activityQuery,
+  ok: { 200: HmoActivityPage },
+  errors: { 404: 'NOT_FOUND' },
+});
+
+// ─── HMO portal ──────────────────────────────────────────────────────────────
+
+const HMO_PORTAL =
+  'Requires an **HMO portal** token (from `/hmo-portal/auth/login`). The HMO comes from the token. Until a temporary password is changed, only `GET /hmo-portal/me` and `PATCH /hmo-portal/password` work (403 `PASSWORD_CHANGE_REQUIRED`).';
+const roles = (who: string) => `${HMO_PORTAL}\n\nRoles: ${who}.`;
+const HmoPortalProfile = z.object({ account: HmoPortalUser, hmo: anyJson });
+op('post', '/hmo-portal/auth/login', {
+  tag: 'HMO portal',
+  summary: 'Sign in to the HMO portal',
+  auth: false,
+  body: hmoPortal.loginSchema,
+  ok: { 200: HmoPortalProfile.extend({ session: c.Session }) },
+  errors: { 401: 'UNAUTHORIZED', 403: 'FORBIDDEN — account deactivated' },
+});
+op('post', '/hmo-portal/auth/refresh', {
+  tag: 'HMO portal',
+  summary: 'Renew an HMO portal session',
+  description:
+    'Exchange the `refreshToken` for a new access token and refresh token. Each refresh token is single-use; a second use within 30 seconds is allowed, later reuse ends the session.',
+  auth: false,
+  body: auth.refreshSchema,
+  ok: { 200: z.object({ session: c.Session }) },
+  errors: { 401: 'UNAUTHORIZED' },
+});
+op('post', '/hmo-portal/auth/logout', {
+  tag: 'HMO portal',
+  summary: 'Sign out of the HMO portal on this device',
+  auth: false,
+  body: auth.refreshSchema,
+  ok: { 204: null },
+});
+op('get', '/hmo-portal/me', {
+  tag: 'HMO portal',
+  summary: 'The signed-in account and its HMO',
+  description: HMO_PORTAL,
+  ok: { 200: HmoPortalProfile },
+});
+op('patch', '/hmo-portal/password', {
+  tag: 'HMO portal',
+  summary: 'Change your password',
+  description: `${HMO_PORTAL}\n\nSigns out every other session and returns a fresh one for this device.`,
+  body: hmoPortal.passwordSchema,
+  ok: { 200: z.object({ updated: z.boolean(), session: c.Session }) },
+  errors: { 400: 'BAD_REQUEST — current password incorrect' },
+});
+op('patch', '/hmo-portal/profile', {
+  tag: 'HMO portal',
+  summary: 'Update the HMO’s contact details and logo',
+  description: roles('admin'),
+  body: hmoPortal.profileSchema,
+  ok: { 200: anyJson },
+  errors: { 403: 'FORBIDDEN' },
+});
+op('get', '/hmo-portal/dashboard', {
+  tag: 'HMO portal',
+  summary: 'Members, utilisation and billing at a glance',
+  description: `${roles('all')}\n\nUtilisation covers the last six months (Lagos time) and counts only services that happened: paid, not cancelled, delivered.`,
+  ok: { 200: anyJson },
+});
+op('get', '/hmo-portal/plans', {
+  tag: 'HMO portal',
+  summary: 'The HMO’s plans and the benefits of each',
+  description: roles('all'),
+  ok: { 200: z.object({ plans: z.array(anyJson) }) },
+});
+op('get', '/hmo-portal/plans/:planId/price-preview', {
+  tag: 'HMO portal',
+  summary: 'What each service costs a member, and the HMO, under a plan',
+  description: roles('all'),
+  params: z.object({ planId: z.string() }),
+  ok: { 200: anyJson },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('get', '/hmo-portal/enrollees', {
+  tag: 'HMO portal',
+  summary: 'Members',
+  description: `${roles('all')}\n\n\`linked\` says whether the member uses the Instant Doctor app; their app account itself is not shared.`,
+  query: hmoPortal.enrolleesQuery,
+  ok: { 200: anyJson },
+});
+op('post', '/hmo-portal/enrollees', {
+  tag: 'HMO portal',
+  summary: 'Add a member',
+  description: roles('admin, manager'),
+  body: hmoPortal.enrolleeSchema,
+  ok: { 201: anyJson },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND — plan', 409: 'ENROLLEE_CODE_TAKEN' },
+});
+op('post', '/hmo-portal/enrollees/import', {
+  tag: 'HMO portal',
+  summary: 'Import a member list',
+  description: `${roles('admin, manager')}\n\nNew codes are added, known codes updated and re-activated. With \`endMissing\`, members of the plan absent from the list are ended.`,
+  body: hmoPortal.importSchema,
+  ok: {
+    200: z.object({
+      created: z.number(),
+      updated: z.number(),
+      ended: z.number(),
+      matched: z.number(),
+      errors: z.array(anyJson),
+    }),
+  },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND — plan' },
+});
+op('get', '/hmo-portal/enrollees/:enrolleeId', {
+  tag: 'HMO portal',
+  summary: 'A member, their benefit usage and claim totals',
+  description: roles('all'),
+  params: z.object({ enrolleeId: z.string() }),
+  ok: { 200: anyJson },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('patch', '/hmo-portal/enrollees/:enrolleeId', {
+  tag: 'HMO portal',
+  summary: 'Update a member (plan, details, status, cover dates)',
+  description: roles('admin, manager'),
+  params: z.object({ enrolleeId: z.string() }),
+  body: hmoPortal.updateEnrolleeSchema,
+  ok: { 200: anyJson },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND' },
+});
+op('get', '/hmo-portal/claims', {
+  tag: 'HMO portal',
+  summary: 'Claims, with totals by status',
+  description: roles('all'),
+  query: hmoPortal.claimsQuery,
+  ok: { 200: anyJson },
+});
+op('get', '/hmo-portal/invoices', {
+  tag: 'HMO portal',
+  summary: 'Invoices issued to the HMO',
+  description: roles('all'),
+  ok: { 200: c.ItemsOf(anyJson, 'HmoPortalInvoice') },
+});
+op('get', '/hmo-portal/invoices/:invoiceId', {
+  tag: 'HMO portal',
+  summary: 'An invoice with its claims',
+  description: roles('all'),
+  params: z.object({ invoiceId: z.string() }),
+  ok: { 200: anyJson },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('get', '/hmo-portal/activity', {
+  tag: 'HMO portal',
+  summary: 'Activity trail: who changed what, on either side',
+  description: roles('all'),
+  query: hmoPortal.activityQuery,
+  ok: { 200: HmoActivityPage },
+});
+op('get', '/hmo-portal/team', {
+  tag: 'HMO portal',
+  summary: 'Portal accounts at your HMO',
+  description: roles('admin'),
+  ok: { 200: c.ItemsOf(HmoPortalUser, 'HmoPortalTeamUser') },
+  errors: { 403: 'FORBIDDEN' },
+});
+op('post', '/hmo-portal/team', {
+  tag: 'HMO portal',
+  summary: 'Give a colleague portal access',
+  description: `${roles('admin')}\n\nThe password is temporary; they choose their own at first sign-in.`,
+  body: hmoPortal.teamUserSchema,
+  ok: { 201: HmoPortalUser },
+  errors: { 403: 'FORBIDDEN', 409: 'EMAIL_TAKEN' },
+});
+op('patch', '/hmo-portal/team/:userId', {
+  tag: 'HMO portal',
+  summary: 'Change a colleague’s name, role or status',
+  description: `${roles('admin')}\n\nYou cannot change your own access, and the HMO always keeps one active admin.`,
+  params: z.object({ userId: z.string() }),
+  body: hmoPortal.updateTeamUserSchema,
+  ok: { 200: HmoPortalUser },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'OWN_ACCOUNT | LAST_ADMIN' },
+});
+op('post', '/hmo-portal/team/:userId/reset-password', {
+  tag: 'HMO portal',
+  summary: 'Set a temporary password for a colleague',
+  description: roles('admin'),
+  params: z.object({ userId: z.string() }),
+  body: hmoPortal.resetPasswordSchema,
+  ok: { 200: HmoPortalUser },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'OWN_ACCOUNT' },
+});
+
 // ─── Misc ────────────────────────────────────────────────────────────────────
 
 op('get', '/notifications', {
@@ -1525,36 +2099,65 @@ op('patch', '/pharmacy-portal/staff/:id', {
     }),
   },
 });
-const posPayment = z.object({ method: z.enum(['cash', 'card', 'transfer', 'pos_terminal', 'other']), amount: z.number(), reference: z.string().nullable() });
-const PosSale = z.object({
-  id: z.string(),
-  receiptNumber: z.string(),
-  deviceId: z.string().nullable(),
-  cashierStaffId: z.string().nullable(),
-  cashierName: z.string(),
-  customerName: z.string().nullable(),
-  customerPhone: z.string().nullable(),
-  subtotal: z.number(),
-  discountTotal: z.number(),
-  total: z.number(),
-  payments: z.array(posPayment),
-  amountTendered: z.number(),
-  changeDue: z.number(),
-  status: z.enum(['completed', 'voided']),
-  notes: z.string().nullable(),
-  voidReason: z.string().nullable(),
-  voidedByName: z.string().nullable(),
-  voidedAt: z.date().nullable(),
-  stockWarnings: z.array(z.object({ productId: z.string(), name: z.string(), requested: z.number(), available: z.number() })).nullable(),
-  soldAt: z.date(),
-  createdAt: z.date(),
-  items: z.array(z.object({ id: z.string(), productId: z.string().nullable(), name: z.string(), sku: z.string().nullable(), batchNumber: z.string().nullable(), unitPrice: z.number(), discount: z.number(), quantity: z.number(), lineTotal: z.number(), unitCost: z.number().nullable().meta({ description: 'Null for non-manager roles' }) })),
-}).meta({ id: 'PosSale' });
+const posPayment = z.object({
+  method: z.enum(['cash', 'card', 'transfer', 'pos_terminal', 'other']),
+  amount: z.number(),
+  reference: z.string().nullable(),
+});
+const PosSale = z
+  .object({
+    id: z.string(),
+    receiptNumber: z.string(),
+    deviceId: z.string().nullable(),
+    cashierStaffId: z.string().nullable(),
+    cashierName: z.string(),
+    customerName: z.string().nullable(),
+    customerPhone: z.string().nullable(),
+    subtotal: z.number(),
+    discountTotal: z.number(),
+    total: z.number(),
+    payments: z.array(posPayment),
+    amountTendered: z.number(),
+    changeDue: z.number(),
+    status: z.enum(['completed', 'voided']),
+    notes: z.string().nullable(),
+    voidReason: z.string().nullable(),
+    voidedByName: z.string().nullable(),
+    voidedAt: z.date().nullable(),
+    stockWarnings: z
+      .array(
+        z.object({
+          productId: z.string(),
+          name: z.string(),
+          requested: z.number(),
+          available: z.number(),
+        }),
+      )
+      .nullable(),
+    soldAt: z.date(),
+    createdAt: z.date(),
+    items: z.array(
+      z.object({
+        id: z.string(),
+        productId: z.string().nullable(),
+        name: z.string(),
+        sku: z.string().nullable(),
+        batchNumber: z.string().nullable(),
+        unitPrice: z.number(),
+        discount: z.number(),
+        quantity: z.number(),
+        lineTotal: z.number(),
+        unitCost: z.number().nullable().meta({ description: 'Null for non-manager roles' }),
+      }),
+    ),
+  })
+  .meta({ id: 'PosSale' });
 const posSaleId = z.object({ id: z.string() });
 op('post', '/pharmacy-portal/products/:id/stock', {
   tag: 'Pharmacy portal',
   summary: 'Adjust a product’s stock',
-  description: 'Pass a client-generated `id` (UUID) to make the adjustment idempotent: an offline till that retries the same adjustment gets the current stock back instead of applying it twice.',
+  description:
+    'Pass a client-generated `id` (UUID) to make the adjustment idempotent: an offline till that retries the same adjustment gets the current stock back instead of applying it twice.',
   params: posSaleId,
   body: pharmacyPortal.stockSchema,
   ok: { 200: z.object({ id: z.string(), stockRemaining: z.number() }) },
@@ -1563,8 +2166,14 @@ op('post', '/pharmacy-portal/products/:id/stock', {
 op('get', '/pharmacy-portal/pos/catalog', {
   tag: 'Pharmacy portal',
   summary: 'Download every sellable product for the offline till',
-  description: 'Everything a till needs to sell without a connection. `purchasePrice` is null for non-manager roles. Roles: manager, pharmacist, sales assistant, inventory officer.',
-  ok: { 200: z.object({ items: z.array(z.record(z.string(), z.unknown())), generatedAt: z.iso.datetime() }) },
+  description:
+    'Everything a till needs to sell without a connection. `purchasePrice` is null for non-manager roles. Roles: manager, pharmacist, sales assistant, inventory officer.',
+  ok: {
+    200: z.object({
+      items: z.array(z.record(z.string(), z.unknown())),
+      generatedAt: z.iso.datetime(),
+    }),
+  },
 });
 op('post', '/pharmacy-portal/pos/sales/sync', {
   tag: 'Pharmacy portal',
@@ -1575,13 +2184,17 @@ op('post', '/pharmacy-portal/pos/sales/sync', {
     'Stock is taken off the shelf. Stock that ran short while offline is recorded in `stockWarnings` rather than refusing the sale. Change may only be given from cash.',
     'Every sale is handled on its own: a rejected sale does not block the rest of the batch.',
   ].join('\n\n'),
-  body: pharmacyPortal.posSyncSchema.extend({ sales: z.array(pharmacyPortal.posSaleSchema).min(1).max(50) }),
+  body: pharmacyPortal.posSyncSchema.extend({
+    sales: z.array(pharmacyPortal.posSaleSchema).min(1).max(50),
+  }),
   ok: {
     200: z.object({
-      results: z.array(z.union([
-        z.object({ id: z.string(), status: z.enum(['synced', 'duplicate']), sale: PosSale }),
-        z.object({ id: z.string().nullable(), status: z.literal('rejected'), error: z.string() }),
-      ])),
+      results: z.array(
+        z.union([
+          z.object({ id: z.string(), status: z.enum(['synced', 'duplicate']), sale: PosSale }),
+          z.object({ id: z.string().nullable(), status: z.literal('rejected'), error: z.string() }),
+        ]),
+      ),
       syncedAt: z.iso.datetime(),
     }),
   },
@@ -1591,7 +2204,14 @@ op('get', '/pharmacy-portal/pos/sales', {
   summary: 'List counter sales',
   description: 'Managers see every sale; other staff see only the sales they rang up.',
   query: pharmacyPortal.posSalesListSchema,
-  ok: { 200: z.object({ items: z.array(PosSale), total: z.number(), limit: z.number(), offset: z.number() }) },
+  ok: {
+    200: z.object({
+      items: z.array(PosSale),
+      total: z.number(),
+      limit: z.number(),
+      offset: z.number(),
+    }),
+  },
 });
 op('get', '/pharmacy-portal/pos/sales/:id', {
   tag: 'Pharmacy portal',
@@ -1612,59 +2232,241 @@ op('post', '/pharmacy-portal/pos/sales/:id/void', {
 op('get', '/pharmacy-portal/pos/summary', {
   tag: 'Pharmacy portal',
   summary: 'End-of-day totals for a time window',
-  description: 'Manager or owner. The till sends its local day bounds. Cash takings are net of change given.',
+  description:
+    'Manager or owner. The till sends its local day bounds. Cash takings are net of change given.',
   query: pharmacyPortal.posSummarySchema,
   ok: {
     200: z.object({
-      from: z.string(), to: z.string(), salesCount: z.number(), itemsSold: z.number(), gross: z.number(), discounts: z.number(), net: z.number(),
-      averageSale: z.number(), costOfGoods: z.number(), grossProfit: z.number(), costComplete: z.boolean(), voidedCount: z.number(), voidedTotal: z.number(),
+      from: z.string(),
+      to: z.string(),
+      salesCount: z.number(),
+      itemsSold: z.number(),
+      gross: z.number(),
+      discounts: z.number(),
+      net: z.number(),
+      averageSale: z.number(),
+      costOfGoods: z.number(),
+      grossProfit: z.number(),
+      costComplete: z.boolean(),
+      voidedCount: z.number(),
+      voidedTotal: z.number(),
       payments: z.array(z.object({ method: z.string(), amount: z.number() })),
       cashiers: z.array(z.object({ name: z.string(), sales: z.number(), total: z.number() })),
-      topProducts: z.array(z.object({ name: z.string(), quantity: z.number(), revenue: z.number() })),
-      stockWarnings: z.array(z.object({ productId: z.string(), name: z.string(), requested: z.number(), available: z.number(), receiptNumber: z.string() })),
+      topProducts: z.array(
+        z.object({ name: z.string(), quantity: z.number(), revenue: z.number() }),
+      ),
+      stockWarnings: z.array(
+        z.object({
+          productId: z.string(),
+          name: z.string(),
+          requested: z.number(),
+          available: z.number(),
+          receiptNumber: z.string(),
+        }),
+      ),
     }),
   },
 });
-const Payout = z.object({
-  id: z.string(), pharmacyId: z.string(), reference: z.string(), amount: z.number(), currency: z.string(),
-  trigger: z.enum(['on_demand', 'scheduled']), status: z.enum(['pending_approval', 'processing', 'paid', 'failed', 'rejected', 'cancelled']),
-  bankName: z.string(), accountNumber: z.string(), accountName: z.string(), requestedBy: z.string(),
-  approvedBy: z.string().nullable(), approvedAt: z.date().nullable(), transferCode: z.string().nullable(),
-  rejectionReason: z.string().nullable(), lastError: z.string().nullable(), paidAt: z.date().nullable(), createdAt: z.date(),
-}).meta({ id: 'PharmacyPayout' });
-const LedgerEntry = z.object({
-  id: z.string(), type: z.enum(['order_earning', 'order_reversal', 'payout', 'payout_reversal', 'adjustment']), amount: z.number(),
-  balanceAfter: z.number(), description: z.string(), orderId: z.string().nullable(), payoutId: z.string().nullable(),
-  createdBy: z.string().nullable(), availableAt: z.date(), createdAt: z.date(),
-}).meta({ id: 'PharmacyLedgerEntry' });
-const BankAccount = z.object({ bankCode: z.string(), bankName: z.string(), accountNumber: z.string(), accountName: z.string(), updatedAt: z.date() }).meta({ id: 'PharmacyBankAccount' });
+const Payout = z
+  .object({
+    id: z.string(),
+    pharmacyId: z.string(),
+    reference: z.string(),
+    amount: z.number(),
+    currency: z.string(),
+    trigger: z.enum(['on_demand', 'scheduled']),
+    status: z.enum(['pending_approval', 'processing', 'paid', 'failed', 'rejected', 'cancelled']),
+    bankName: z.string(),
+    accountNumber: z.string(),
+    accountName: z.string(),
+    requestedBy: z.string(),
+    approvedBy: z.string().nullable(),
+    approvedAt: z.date().nullable(),
+    transferCode: z.string().nullable(),
+    rejectionReason: z.string().nullable(),
+    lastError: z.string().nullable(),
+    paidAt: z.date().nullable(),
+    createdAt: z.date(),
+  })
+  .meta({ id: 'PharmacyPayout' });
+const LedgerEntry = z
+  .object({
+    id: z.string(),
+    type: z.enum(['order_earning', 'order_reversal', 'payout', 'payout_reversal', 'adjustment']),
+    amount: z.number(),
+    balanceAfter: z.number(),
+    description: z.string(),
+    orderId: z.string().nullable(),
+    payoutId: z.string().nullable(),
+    createdBy: z.string().nullable(),
+    availableAt: z.date(),
+    createdAt: z.date(),
+  })
+  .meta({ id: 'PharmacyLedgerEntry' });
+const BankAccount = z
+  .object({
+    bankCode: z.string(),
+    bankName: z.string(),
+    accountNumber: z.string(),
+    accountName: z.string(),
+    updatedAt: z.date(),
+  })
+  .meta({ id: 'PharmacyBankAccount' });
 const PayoutSummary = z.object({
-  balance: z.number(), available: z.number().meta({ description: 'Withdrawable now' }), pending: z.number().meta({ description: 'Still in the clearing period' }),
-  currency: z.string(), totalPaidOut: z.number(), openPayout: Payout.nullable(), bankAccount: BankAccount.nullable(),
-  clearingHour: z.number().meta({ description: 'Earnings clear at this Lagos hour on the day after delivery' }), nextWeeklyPayoutAt: z.iso.datetime().nullable(),
+  balance: z.number(),
+  available: z.number().meta({ description: 'Withdrawable now' }),
+  pending: z.number().meta({ description: 'Still in the clearing period' }),
+  currency: z.string(),
+  totalPaidOut: z.number(),
+  openPayout: Payout.nullable(),
+  bankAccount: BankAccount.nullable(),
+  clearingHour: z
+    .number()
+    .meta({ description: 'Earnings clear at this Lagos hour on the day after delivery' }),
+  nextWeeklyPayoutAt: z.iso.datetime().nullable(),
 });
-const page = <T extends z.ZodType>(item: T) => z.object({ items: z.array(item), total: z.number(), limit: z.number(), offset: z.number() });
-const PAYOUT_FLOW = 'Earnings from delivered orders land in the pharmacy ledger and become withdrawable after the clearing period. A withdrawal reserves the money at once and waits for an admin; approval sends a Paystack Transfer to the verified bank account, and `transfer.*` webhooks settle it. Pharmacies that did not withdraw are paid out weekly.';
+const page = <T extends z.ZodType>(item: T) =>
+  z.object({ items: z.array(item), total: z.number(), limit: z.number(), offset: z.number() });
+const PAYOUT_FLOW =
+  'Earnings from delivered orders land in the pharmacy ledger and become withdrawable after the clearing period. A withdrawal reserves the money at once and waits for an admin; approval sends a Paystack Transfer to the verified bank account, and `transfer.*` webhooks settle it. Pharmacies that did not withdraw are paid out weekly.';
 
-op('get', '/pharmacy-portal/payouts/summary', { tag: 'Pharmacy portal', summary: 'Balances, bank account and the payout in progress', description: `${PAYOUT_FLOW}\n\nOwner or manager.`, ok: { 200: PayoutSummary } });
-op('get', '/pharmacy-portal/payouts', { tag: 'Pharmacy portal', summary: 'Payout history', query: payoutSchemas.payoutListSchema, ok: { 200: page(Payout) } });
-op('get', '/pharmacy-portal/payouts/ledger', { tag: 'Pharmacy portal', summary: 'Earnings statement (every credit and debit)', query: payoutSchemas.pageSchema, ok: { 200: page(LedgerEntry) } });
-op('get', '/pharmacy-portal/payouts/banks', { tag: 'Pharmacy portal', summary: 'Nigerian banks payouts can be sent to', description: 'Owner only.', ok: { 200: z.object({ items: z.array(z.object({ name: z.string(), code: z.string() })) }) } });
-op('put', '/pharmacy-portal/payouts/bank-account', { tag: 'Pharmacy portal', summary: 'Set the payout bank account', description: 'Owner only. The account is resolved with the bank and the bank’s account name is stored. The owner is emailed on every change. Blocked while a payout is in progress.', body: payoutSchemas.bankAccountSchema, ok: { 200: BankAccount }, errors: { 409: 'PAYOUT_IN_PROGRESS', 422: 'ACCOUNT_NOT_FOUND' } });
-op('post', '/pharmacy-portal/payouts', { tag: 'Pharmacy portal', summary: 'Request a withdrawal', description: 'Owner only. Reserves the amount from the available balance and queues it for admin approval. One payout in progress at a time.', body: payoutSchemas.payoutRequestSchema, ok: { 201: Payout }, errors: { 409: 'PAYOUT_IN_PROGRESS', 422: 'NO_BANK_ACCOUNT | INSUFFICIENT_BALANCE' } });
-op('post', '/pharmacy-portal/payouts/:id/cancel', { tag: 'Pharmacy portal', summary: 'Cancel a withdrawal awaiting approval', params: idParam, ok: { 200: Payout } });
+op('get', '/pharmacy-portal/payouts/summary', {
+  tag: 'Pharmacy portal',
+  summary: 'Balances, bank account and the payout in progress',
+  description: `${PAYOUT_FLOW}\n\nOwner or manager.`,
+  ok: { 200: PayoutSummary },
+});
+op('get', '/pharmacy-portal/payouts', {
+  tag: 'Pharmacy portal',
+  summary: 'Payout history',
+  query: payoutSchemas.payoutListSchema,
+  ok: { 200: page(Payout) },
+});
+op('get', '/pharmacy-portal/payouts/ledger', {
+  tag: 'Pharmacy portal',
+  summary: 'Earnings statement (every credit and debit)',
+  query: payoutSchemas.pageSchema,
+  ok: { 200: page(LedgerEntry) },
+});
+op('get', '/pharmacy-portal/payouts/banks', {
+  tag: 'Pharmacy portal',
+  summary: 'Nigerian banks payouts can be sent to',
+  description: 'Owner only.',
+  ok: { 200: z.object({ items: z.array(z.object({ name: z.string(), code: z.string() })) }) },
+});
+op('put', '/pharmacy-portal/payouts/bank-account', {
+  tag: 'Pharmacy portal',
+  summary: 'Set the payout bank account',
+  description:
+    'Owner only. The account is resolved with the bank and the bank’s account name is stored. The owner is emailed on every change. Blocked while a payout is in progress.',
+  body: payoutSchemas.bankAccountSchema,
+  ok: { 200: BankAccount },
+  errors: { 409: 'PAYOUT_IN_PROGRESS', 422: 'ACCOUNT_NOT_FOUND' },
+});
+op('post', '/pharmacy-portal/payouts', {
+  tag: 'Pharmacy portal',
+  summary: 'Request a withdrawal',
+  description:
+    'Owner only. Reserves the amount from the available balance and queues it for admin approval. One payout in progress at a time.',
+  body: payoutSchemas.payoutRequestSchema,
+  ok: { 201: Payout },
+  errors: { 409: 'PAYOUT_IN_PROGRESS', 422: 'NO_BANK_ACCOUNT | INSUFFICIENT_BALANCE' },
+});
+op('post', '/pharmacy-portal/payouts/:id/cancel', {
+  tag: 'Pharmacy portal',
+  summary: 'Cancel a withdrawal awaiting approval',
+  params: idParam,
+  ok: { 200: Payout },
+});
 
-op('get', '/admin/payouts/overview', { tag: 'Admin', summary: 'Payout queue totals, next weekly run and settings', description: PAYOUT_FLOW, ok: { 200: z.record(z.string(), z.unknown()) } });
-op('get', '/admin/payouts', { tag: 'Admin', summary: 'All pharmacy payouts', query: payoutSchemas.payoutListSchema, ok: { 200: page(Payout.extend({ pharmacyName: z.string() })) } });
-op('get', '/admin/payouts/balances', { tag: 'Admin', summary: 'What each pharmacy is owed', query: payoutSchemas.balancesListSchema, ok: { 200: page(z.record(z.string(), z.unknown())) } });
-op('get', '/admin/payouts/gateway-balance', { tag: 'Admin', summary: 'Paystack balance available for transfers', ok: { 200: z.object({ balance: z.object({ currency: z.string(), amount: z.number() }).nullable() }) } });
-op('put', '/admin/payouts/settings', { tag: 'Admin', summary: 'Weekly schedule, clearing period, auto-approval', body: payoutSchemas.settingsUpdateSchema, ok: { 200: z.record(z.string(), z.unknown()) } });
-op('post', '/admin/payouts/run-weekly', { tag: 'Admin', summary: 'Create this week’s payouts now', ok: { 200: z.object({ runId: z.string(), payoutCount: z.number(), totalAmount: z.number() }).nullable() } });
-op('post', '/admin/payouts/approve', { tag: 'Admin', summary: 'Approve and send several payouts', description: 'Stops early if Paystack reports its balance is too low.', body: payoutSchemas.approveManySchema, ok: { 200: z.object({ results: z.array(z.object({ id: z.string(), ok: z.boolean(), status: z.string().optional(), error: z.string().optional() })) }) } });
-op('post', '/admin/payouts/:id/approve', { tag: 'Admin', summary: 'Approve a payout and send it via Paystack', description: 'A Paystack refusal returns the payout to the approval queue with `lastError`; an unknown outcome leaves it processing until the webhook or reconciliation settles it.', params: idParam, ok: { 200: Payout }, errors: { 422: 'TRANSFER_REFUSED' } });
-op('post', '/admin/payouts/:id/reject', { tag: 'Admin', summary: 'Decline a payout; the money returns to the pharmacy balance', params: idParam, body: payoutSchemas.rejectSchema, ok: { 200: Payout } });
-op('get', '/admin/pharmacies/:id/ledger', { tag: 'Admin', summary: 'A pharmacy’s earnings statement and payout summary', params: idParam, query: payoutSchemas.pageSchema, ok: { 200: page(LedgerEntry).extend({ summary: PayoutSummary }) } });
-op('post', '/admin/pharmacies/:id/ledger-adjustments', { tag: 'Admin', summary: 'Credit or debit a pharmacy balance with a reason', params: idParam, body: payoutSchemas.adjustmentSchema, ok: { 200: z.object({ balance: z.number(), available: z.number(), pending: z.number() }) } });
+op('get', '/admin/payouts/overview', {
+  tag: 'Admin',
+  summary: 'Payout queue totals, next weekly run and settings',
+  description: PAYOUT_FLOW,
+  ok: { 200: z.record(z.string(), z.unknown()) },
+});
+op('get', '/admin/payouts', {
+  tag: 'Admin',
+  summary: 'All pharmacy payouts',
+  query: payoutSchemas.payoutListSchema,
+  ok: { 200: page(Payout.extend({ pharmacyName: z.string() })) },
+});
+op('get', '/admin/payouts/balances', {
+  tag: 'Admin',
+  summary: 'What each pharmacy is owed',
+  query: payoutSchemas.balancesListSchema,
+  ok: { 200: page(z.record(z.string(), z.unknown())) },
+});
+op('get', '/admin/payouts/gateway-balance', {
+  tag: 'Admin',
+  summary: 'Paystack balance available for transfers',
+  ok: {
+    200: z.object({ balance: z.object({ currency: z.string(), amount: z.number() }).nullable() }),
+  },
+});
+op('put', '/admin/payouts/settings', {
+  tag: 'Admin',
+  summary: 'Weekly schedule, clearing period, auto-approval',
+  body: payoutSchemas.settingsUpdateSchema,
+  ok: { 200: z.record(z.string(), z.unknown()) },
+});
+op('post', '/admin/payouts/run-weekly', {
+  tag: 'Admin',
+  summary: 'Create this week’s payouts now',
+  ok: {
+    200: z
+      .object({ runId: z.string(), payoutCount: z.number(), totalAmount: z.number() })
+      .nullable(),
+  },
+});
+op('post', '/admin/payouts/approve', {
+  tag: 'Admin',
+  summary: 'Approve and send several payouts',
+  description: 'Stops early if Paystack reports its balance is too low.',
+  body: payoutSchemas.approveManySchema,
+  ok: {
+    200: z.object({
+      results: z.array(
+        z.object({
+          id: z.string(),
+          ok: z.boolean(),
+          status: z.string().optional(),
+          error: z.string().optional(),
+        }),
+      ),
+    }),
+  },
+});
+op('post', '/admin/payouts/:id/approve', {
+  tag: 'Admin',
+  summary: 'Approve a payout and send it via Paystack',
+  description:
+    'A Paystack refusal returns the payout to the approval queue with `lastError`; an unknown outcome leaves it processing until the webhook or reconciliation settles it.',
+  params: idParam,
+  ok: { 200: Payout },
+  errors: { 422: 'TRANSFER_REFUSED' },
+});
+op('post', '/admin/payouts/:id/reject', {
+  tag: 'Admin',
+  summary: 'Decline a payout; the money returns to the pharmacy balance',
+  params: idParam,
+  body: payoutSchemas.rejectSchema,
+  ok: { 200: Payout },
+});
+op('get', '/admin/pharmacies/:id/ledger', {
+  tag: 'Admin',
+  summary: 'A pharmacy’s earnings statement and payout summary',
+  params: idParam,
+  query: payoutSchemas.pageSchema,
+  ok: { 200: page(LedgerEntry).extend({ summary: PayoutSummary }) },
+});
+op('post', '/admin/pharmacies/:id/ledger-adjustments', {
+  tag: 'Admin',
+  summary: 'Credit or debit a pharmacy balance with a reason',
+  params: idParam,
+  body: payoutSchemas.adjustmentSchema,
+  ok: { 200: z.object({ balance: z.number(), available: z.number(), pending: z.number() }) },
+});
 const DIRECT_UPLOAD = [
   '**Preferred upload flow** — the file goes straight to storage, never through the API:',
   '1. `POST …/uploads/presign` with `purpose`, `contentType`, exact `size` (bytes) and optional `name`. The purpose policy (type, size, who may upload) is checked here.',

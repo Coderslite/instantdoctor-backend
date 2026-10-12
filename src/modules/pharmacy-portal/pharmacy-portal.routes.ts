@@ -15,6 +15,7 @@ import { purposeOf } from '../files/files.routes.js';
 import { presignUploadSchema } from '../files/files.schemas.js';
 import { completeUpload, createUpload, uploadFile } from '../files/files.service.js';
 import { singleFile } from '../files/upload-middleware.js';
+import { verifyCode } from '../prescriptions/prescriptions.service.js';
 
 export const pharmacyPortalRouter = Router();
 const refreshLimiter = rateLimit({
@@ -65,6 +66,7 @@ function redactSalesOrder<T extends {
     deliveryFee: undefined,
     totalAmount: undefined,
     pharmacyEarning: undefined,
+    hmoAmount: undefined,
     ...(Array.isArray(order.items) ? {
       items: order.items.map((item) =>
         typeof item === 'object' && item !== null ? { ...item, unitPrice: undefined } : item,
@@ -258,6 +260,23 @@ pharmacyPortalRouter.get('/orders/:id', canWorkOrders, async (req, res) => {
   const order = await store.orderDetail(auth.pharmacyId, String(req.params.id));
   res.json(auth.role === 'sales_assistant' ? redactSalesOrder(order) : order);
 });
+// A pharmacist checks a prescription code a walk-in patient shows them. Rate-limited so codes can't be guessed.
+const verifyLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => currentPharmacy(req).pharmacyId,
+  skip: () => isTest,
+});
+pharmacyPortalRouter.get(
+  '/prescriptions/:code',
+  requirePharmacyRoles('manager', 'pharmacist'),
+  verifyLimiter,
+  async (req, res) => {
+    res.json(await verifyCode(String(req.params.code)));
+  },
+);
 /** Legacy one-step status change, mapped onto the fulfilment actions. */
 pharmacyPortalRouter.patch('/orders/:id/status', canWorkOrders, async (req, res) => {
   const { status } = parse(schemas.orderStatusSchema, req.body);

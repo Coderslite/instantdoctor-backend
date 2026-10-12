@@ -9,8 +9,8 @@ export const labResultsRouter = Router();
 labResultsRouter.use(authenticate);
 
 labResultsRouter.get('/price', async (req, res) => {
-  const quote = await service.quoteForUser(currentUser(req).userId);
-  res.json({ amount: quote.amount, currency: quote.currency, amountUsd: quote.amountUsd });
+  const { quote, hmo } = await service.priceForUser(currentUser(req).userId);
+  res.json({ amount: quote.amount, currency: quote.currency, amountUsd: quote.amountUsd, hmo });
 });
 
 labResultsRouter.post('/', idempotent('lab-results.create'), async (req, res) => {

@@ -113,6 +113,8 @@ export const appointments = mysqlTable(
     /** Covered by a Family Care monthly GP credit rather than a one-off payment. */
     isSubscriptionCredit: boolean('is_subscription_credit').notNull().default(false),
     subscriptionId: id('subscription_id').references(() => familySubscriptions.id, { onDelete: 'set null' }),
+    /** Set when an HMO agreement priced this booking; the doctor earning was fixed at booking. */
+    hmoClaimId: id('hmo_claim_id'),
     isPaid: boolean('is_paid').notNull().default(false),
     paidAt: timestamp('paid_at'),
     /** Unpaid bookings block the doctor's slot until this instant (extended on payment start). */
@@ -187,11 +189,45 @@ export const prescriptions = mysqlTable(
       .references(() => appointments.id, { onDelete: 'cascade' }),
     userId: id('user_id').notNull(),
     doctorId: id('doctor_id').notNull(),
+    /** Readable text of the whole prescription (items + notes); what older apps show. */
     prescription: text('prescription').notNull(),
+    /** Doctor's free-text advice alongside the structured items. */
+    notes: text('notes'),
+    /** Short code a pharmacist uses to verify it, e.g. RX-7KQ2M9. Null on legacy text-only prescriptions. */
+    code: varchar('code', { length: 16 }),
+    /** Medicines can't be dispensed against it after this. */
+    expiresAt: timestamp('expires_at'),
     seen: boolean('seen').notNull().default(false),
     createdAt: createdAt(),
   },
-  (t) => [index('prescriptions_appointment_idx').on(t.appointmentId, t.createdAt)],
+  (t) => [
+    index('prescriptions_appointment_idx').on(t.appointmentId, t.createdAt),
+    index('prescriptions_user_idx').on(t.userId, t.createdAt),
+    uniqueIndex('prescriptions_code_uq').on(t.code),
+  ],
+);
+
+/** One prescribed medicine. `quantity` is how many units (packs) may be dispensed in total. */
+export const prescriptionItems = mysqlTable(
+  'prescription_items',
+  {
+    id: id('id').primaryKey(),
+    prescriptionId: id('prescription_id')
+      .notNull()
+      .references(() => prescriptions.id, { onDelete: 'cascade' }),
+    /** Generic or brand name, e.g. Amoxicillin. */
+    name: varchar('name', { length: 200 }).notNull(),
+    /** e.g. 500mg. */
+    strength: varchar('strength', { length: 60 }),
+    /** e.g. capsule, syrup. */
+    form: varchar('form', { length: 40 }),
+    /** e.g. 1 capsule three times daily after meals. */
+    directions: varchar('directions', { length: 500 }).notNull(),
+    durationDays: int('duration_days'),
+    quantity: int('quantity').notNull().default(1),
+    sortOrder: int('sort_order').notNull().default(0),
+  },
+  (t) => [index('prescription_items_prescription_idx').on(t.prescriptionId, t.sortOrder)],
 );
 
 export const reviews = mysqlTable(

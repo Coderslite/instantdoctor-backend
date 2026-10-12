@@ -12,15 +12,26 @@ import {
   users,
 } from '../../db/schema/index.js';
 import { mailer } from '../../integrations/mailer.js';
-import { convertCurrencyAmount, doctorEarningFx, type DoctorEarningFx } from '../../integrations/exchange-rates.js';
+import {
+  convertCurrencyAmount,
+  doctorEarningFx,
+  type DoctorEarningFx,
+} from '../../integrations/exchange-rates.js';
 import { emailAppointmentUpdate } from '../appointments/appointment-emails.js';
 import { sendPush, type PushMessage } from '../../integrations/push.js';
 import { notFound } from '../../lib/errors.js';
+import { round2 } from '../../lib/money.js';
 import { realtime } from '../../realtime/gateway.js';
 import { doctorPushTokens } from '../doctors/doctors.service.js';
 import { activateFamilySubscription } from '../subscriptions/subscriptions.service.js';
 import { createNotification } from '../notifications/notifications.service.js';
-import { doctorEarning, orderSurcharge, pharmacySplit, referralCommission, type FeePolicy } from '../pricing/fees.js';
+import {
+  doctorEarning,
+  orderSurcharge,
+  pharmacySplit,
+  referralCommission,
+  type FeePolicy,
+} from '../pricing/fees.js';
 import { formatNaira, recordOrderEvent } from '../pharmacy/marketplace.js';
 import { creditReferralBalance, credit } from '../wallet/wallet.ledger.js';
 import type { Effect } from './effects.js';
@@ -31,11 +42,17 @@ export interface FulfillmentResult {
   duplicate: boolean;
 }
 
-export async function confirmFamilySubscription(tx: Tx, userId: string): Promise<FulfillmentResult> {
+export async function confirmFamilySubscription(
+  tx: Tx,
+  userId: string,
+): Promise<FulfillmentResult> {
   await activateFamilySubscription(tx, userId);
   return {
     effects: [
-      await createNotification({ userId, type: 'transaction', title: 'Your Family Care membership is active' }, tx),
+      await createNotification(
+        { userId, type: 'transaction', title: 'Your Family Care membership is active' },
+        tx,
+      ),
       await payerPush(tx, userId, {
         title: 'Payment confirmed',
         body: 'Your Family Care membership is active.',
@@ -81,8 +98,9 @@ export async function confirmAppointment(
   const now = new Date();
   const earning = appointment.isTrial
     ? 0
-    : appointment.isSubscriptionCredit
-      ? appointment.doctorEarning
+    : appointment.isSubscriptionCredit || appointment.hmoClaimId
+      ? // Fixed when booked: Family Care's GP rate, or the HMO agreement's doctor pay.
+        appointment.doctorEarning
       : doctorEarning(appointment.price, opts.feePolicy);
   let earningFx = opts.doctorEarningFx ?? null;
   if (appointment.doctorId && appointment.currency && !earningFx) {
@@ -101,12 +119,18 @@ export async function confirmAppointment(
       paidAt: appointment.paidAt ?? now,
       currency: opts.currency ?? appointment.currency,
       doctorEarning: earning,
-      ...(appointment.doctorId && earningFx && earning !== null && {
-        doctorEarningConverted: convertCurrencyAmount(earning, earningFx.currency, earningFx.rate),
-        doctorEarningCurrency: earningFx.currency,
-        doctorEarningExchangeRate: earningFx.rate,
-        doctorEarningConvertedAt: new Date(earningFx.capturedAt),
-      }),
+      ...(appointment.doctorId &&
+        earningFx &&
+        earning !== null && {
+          doctorEarningConverted: convertCurrencyAmount(
+            earning,
+            earningFx.currency,
+            earningFx.rate,
+          ),
+          doctorEarningCurrency: earningFx.currency,
+          doctorEarningExchangeRate: earningFx.rate,
+          doctorEarningConvertedAt: new Date(earningFx.capturedAt),
+        }),
     })
     .where(eq(appointments.id, appointmentId));
   await tx.update(users).set({ hasPaid: true }).where(eq(users.id, appointment.userId));
@@ -126,7 +150,13 @@ export async function confirmAppointment(
     );
   if ((prior?.n ?? 0) === 0 && appointment.price > 0) {
     effects.push(
-      ...(await awardReferralCommission(tx, appointment.userId, appointment.price, appointment.currency, opts.feePolicy)),
+      ...(await awardReferralCommission(
+        tx,
+        appointment.userId,
+        appointment.price,
+        appointment.currency,
+        opts.feePolicy,
+      )),
     );
   }
 
@@ -203,12 +233,16 @@ async function awardReferralCommission(
     .where(eq(referrals.id, referral.id));
   await creditReferralBalance(tx, referral.referrerId, commission);
 
-  const [referred] = await tx.select({ firstName: users.firstName }).from(users).where(eq(users.id, referredUserId));
+  const [referred] = await tx
+    .select({ firstName: users.firstName })
+    .from(users)
+    .where(eq(users.id, referredUserId));
   const notify = await createNotification(
     {
       userId: referral.referrerId,
       type: 'transaction',
-      title: `You earned ${currency ?? ''} ${commission.toFixed(2)} from ${referred?.firstName || 'a referred user'}'s appointment booking`.trim(),
+      title:
+        `You earned ${currency ?? ''} ${commission.toFixed(2)} from ${referred?.firstName || 'a referred user'}'s appointment booking`.trim(),
     },
     tx,
   );
@@ -222,7 +256,11 @@ export async function confirmCheckout(
   checkoutId: string,
   opts: { feePolicy?: FeePolicy; surcharge?: number } = {},
 ): Promise<FulfillmentResult> {
-  const [checkout] = await tx.select().from(orderCheckouts).where(eq(orderCheckouts.id, checkoutId)).for('update');
+  const [checkout] = await tx
+    .select()
+    .from(orderCheckouts)
+    .where(eq(orderCheckouts.id, checkoutId))
+    .for('update');
   if (!checkout) throw notFound('Checkout');
   if (checkout.status === 'paid') return { effects: [], duplicate: true };
 
@@ -230,16 +268,34 @@ export async function confirmCheckout(
 
   const checkoutOrders = await tx.select().from(orders).where(eq(orders.checkoutId, checkoutId));
   const items = checkoutOrders.length
-    ? await tx.select().from(orderItems).where(inArray(orderItems.orderId, checkoutOrders.map((o) => o.id)))
+    ? await tx
+        .select()
+        .from(orderItems)
+        .where(
+          inArray(
+            orderItems.orderId,
+            checkoutOrders.map((o) => o.id),
+          ),
+        )
     : [];
 
   for (const order of checkoutOrders) {
     const split = pharmacySplit(order.subtotal, order.deliveryFee, opts.feePolicy);
     await tx
       .update(orders)
-      .set({ status: 'pending', pharmacyEarning: split.pharmacyEarning, platformEarning: split.platformEarning })
+      .set({
+        status: 'pending',
+        pharmacyEarning: split.pharmacyEarning,
+        platformEarning: split.platformEarning,
+      })
       .where(eq(orders.id, order.id));
-    await recordOrderEvent(tx, order.id, 'pending', 'system', 'Payment confirmed · sent to the pharmacy');
+    await recordOrderEvent(
+      tx,
+      order.id,
+      'pending',
+      'system',
+      'Payment confirmed · sent to the pharmacy',
+    );
   }
   for (const item of items) {
     if (!item.productId) continue;
@@ -250,14 +306,20 @@ export async function confirmCheckout(
   }
 
   const effects: Effect[] = [
-    await createNotification({ userId: checkout.userId, type: 'transaction', title: 'Your purchase was successful' }, tx),
+    await createNotification(
+      { userId: checkout.userId, type: 'transaction', title: 'Your purchase was successful' },
+      tx,
+    ),
     await payerPush(tx, checkout.userId, {
       title: 'Order placed',
       body:
         checkoutOrders.length > 1
           ? `Your order was sent to ${checkoutOrders.length} pharmacies. We’ll update you as each one accepts it.`
           : 'Your order was sent to the pharmacy. We’ll let you know as soon as they accept it.',
-      data: checkoutOrders.length === 1 ? { type: 'order', id: checkoutOrders[0]!.id } : { type: 'orders' },
+      data:
+        checkoutOrders.length === 1
+          ? { type: 'order', id: checkoutOrders[0]!.id }
+          : { type: 'orders' },
     }),
     () => mailer.activity(checkout.userId, 'Order'),
   ];
@@ -270,10 +332,16 @@ export async function confirmCheckout(
     ? await tx
         .select({ id: pharmacies.id, email: pharmacies.email, name: pharmacies.name })
         .from(pharmacies)
-        .where(inArray(pharmacies.id, checkoutOrders.map((o) => o.pharmacyId)))
+        .where(
+          inArray(
+            pharmacies.id,
+            checkoutOrders.map((o) => o.pharmacyId),
+          ),
+        )
     : [];
   const pharmacyById = new Map(pharmacyRows.map((p) => [p.id, p]));
-  const customerName = `${customer?.firstName ?? ''} ${customer?.lastName ?? ''}`.trim() || 'A customer';
+  const customerName =
+    `${customer?.firstName ?? ''} ${customer?.lastName ?? ''}`.trim() || 'A customer';
 
   for (const order of checkoutOrders) {
     const pharmacy = pharmacyById.get(order.pharmacyId);
@@ -295,7 +363,8 @@ export async function confirmCheckout(
 
   // Itemised receipt for the customer.
   if (customer?.email) {
-    const surcharge = opts.surcharge ?? orderSurcharge(checkout.subtotal, opts.feePolicy);
+    const surcharge =
+      opts.surcharge ?? orderSurcharge(round2(checkout.subtotal - checkout.hmoAmount), opts.feePolicy);
     effects.push(() =>
       mailer.orderReceipt({
         to: customer.email,
@@ -307,14 +376,19 @@ export async function confirmCheckout(
           trackingId: order.trackingId,
           lines: items
             .filter((i) => i.orderId === order.id)
-            .map((i) => ({ name: i.name, quantity: i.quantity, amount: formatNaira(i.unitPrice * i.quantity) })),
+            .map((i) => ({
+              name: i.name,
+              quantity: i.quantity,
+              amount: formatNaira(i.unitPrice * i.quantity),
+            })),
           subtotal: formatNaira(order.subtotal),
           deliveryFee: formatNaira(order.deliveryFee),
         })),
         subtotal: formatNaira(checkout.subtotal),
         deliveryFee: formatNaira(checkout.deliveryFee),
         serviceCharge: formatNaira(surcharge),
-        total: formatNaira(checkout.totalAmount + surcharge),
+        hmoCovered: checkout.hmoAmount > 0 ? formatNaira(checkout.hmoAmount) : null,
+        total: formatNaira(checkout.totalAmount - checkout.hmoAmount + surcharge),
       }),
     );
   }
@@ -325,14 +399,23 @@ export async function confirmCheckout(
 // ─── Lab results ─────────────────────────────────────────────────────────────
 
 export async function confirmLabResult(tx: Tx, labResultId: string): Promise<FulfillmentResult> {
-  const [result] = await tx.select().from(labResults).where(eq(labResults.id, labResultId)).for('update');
+  const [result] = await tx
+    .select()
+    .from(labResults)
+    .where(eq(labResults.id, labResultId))
+    .for('update');
   if (!result) throw notFound('Lab result');
   if (result.status !== 'awaiting_payment') return { effects: [], duplicate: true };
   await tx.update(labResults).set({ status: 'pending' }).where(eq(labResults.id, labResultId));
   return {
     effects: [
       await createNotification(
-        { userId: result.userId, type: 'lab_result', title: 'Payment received. A doctor will review your lab result shortly', uniqueId: labResultId },
+        {
+          userId: result.userId,
+          type: 'lab_result',
+          title: 'Payment received. A doctor will review your lab result shortly',
+          uniqueId: labResultId,
+        },
         tx,
       ),
       await payerPush(tx, result.userId, {
@@ -358,13 +441,20 @@ export async function confirmWalletTopUp(
     title: 'Wallet Top Up',
     paymentId: payment.id,
   });
-  const [user] = await tx.select({ token: users.fcmToken }).from(users).where(eq(users.id, payment.userId));
+  const [user] = await tx
+    .select({ token: users.fcmToken })
+    .from(users)
+    .where(eq(users.id, payment.userId));
   const amountText = `${payment.currency} ${payment.baseAmount.toLocaleString('en-US')}`;
   return {
     duplicate: false,
     effects: [
       await createNotification(
-        { userId: payment.userId, type: 'transaction', title: `Your top up of ${amountText} was successful` },
+        {
+          userId: payment.userId,
+          type: 'transaction',
+          title: `Your top up of ${amountText} was successful`,
+        },
         tx,
       ),
       () =>
