@@ -1,10 +1,10 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { reviews, users } from '../../db/schema/index.js';
 import { mailer } from '../../integrations/mailer.js';
 import { sendPush } from '../../integrations/push.js';
 import { isDuplicateKeyError } from '../../lib/db-errors.js';
-import { conflict, forbidden, notFound, unprocessable } from '../../lib/errors.js';
+import { conflict, forbidden, unprocessable } from '../../lib/errors.js';
 import { newId } from '../../lib/ids.js';
 import { requireParticipant } from './appointments.service.js';
 

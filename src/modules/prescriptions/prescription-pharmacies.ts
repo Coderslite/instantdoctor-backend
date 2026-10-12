@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, ne } from 'drizzle-orm';
+import { and, gt, inArray, ne } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { pharmacies, products } from '../../db/schema/index.js';
 import { unprocessable } from '../../lib/errors.js';
