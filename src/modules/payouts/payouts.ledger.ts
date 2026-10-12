@@ -4,7 +4,7 @@ import { appSettings, orders, pharmacies, pharmacyLedger, type PharmacyLedgerTyp
 import { notFound } from '../../lib/errors.js';
 import { newId } from '../../lib/ids.js';
 import { round2 } from '../../lib/money.js';
-import { getPayoutSettings } from './payouts.settings.js';
+import { clearingTime, getPayoutSettings } from './payouts.settings.js';
 
 type Entry = {
   pharmacyId: string;
@@ -87,14 +87,14 @@ export async function settleOrder(tx: Tx, orderId: string) {
   const owed = order.status === 'completed' ? round2(order.earning ?? 0) : 0;
   if (Math.abs(owed - net) < 0.005) return;
   if (owed > net) {
-    const { clearingHours } = await getPayoutSettings(tx);
+    const { clearingHour } = await getPayoutSettings(tx);
     await post(tx, {
       pharmacyId: order.pharmacyId,
       type: 'order_earning',
       amount: round2(owed - net),
       description: `Order ${order.trackingId} delivered`,
       orderId,
-      availableAt: new Date(Date.now() + clearingHours * 3600_000),
+      availableAt: clearingTime(new Date(), clearingHour),
     });
   } else {
     await post(tx, {

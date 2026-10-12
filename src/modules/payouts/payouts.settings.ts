@@ -11,8 +11,11 @@ export const payoutSettingsSchema = z.object({
   /** 0 = Sunday … 6 = Saturday, in Africa/Lagos time. */
   weekday: z.number().int().min(0).max(6).default(1),
   hour: z.number().int().min(0).max(23).default(9),
-  /** Hours a delivered order's earning waits before it can be withdrawn (time to raise a problem). 0 = on delivery. */
-  clearingHours: z.number().int().min(0).max(24 * 30).default(24),
+  /**
+   * Each day's earnings clear together: an order delivered any time on a Lagos
+   * day can be withdrawn from this hour on the following day.
+   */
+  clearingHour: z.number().int().min(0).max(23).default(6),
   /** Send weekly payouts without an admin approving each one. */
   autoApproveScheduled: z.boolean().default(false),
 });
@@ -27,11 +30,11 @@ export async function savePayoutSettings(input: Partial<PayoutSettings>) {
   const previous = await getPayoutSettings();
   const value = payoutSettingsSchema.parse({ ...previous, ...input });
   await db.insert(appSettings).values({ key: KEY, value }).onDuplicateKeyUpdate({ set: { value } });
-  // A shorter clearing period also frees earnings already waiting under the old one.
-  if (value.clearingHours < previous.clearingHours) {
+  // Earnings still waiting move to the new clearing time (Lagos is UTC+1, so its date is created_at + 1h).
+  if (value.clearingHour !== previous.clearingHour) {
     await db
       .update(pharmacyLedger)
-      .set({ availableAt: sql`least(${pharmacyLedger.availableAt}, date_add(${pharmacyLedger.createdAt}, interval ${value.clearingHours} hour))` })
+      .set({ availableAt: sql`date_add(date_add(date(date_add(${pharmacyLedger.createdAt}, interval 1 hour)), interval 1 day), interval ${value.clearingHour - 1} hour)` })
       .where(and(eq(pharmacyLedger.type, 'order_earning'), gt(pharmacyLedger.availableAt, sql`utc_timestamp(3)`)));
   }
   return value;
@@ -39,6 +42,12 @@ export async function savePayoutSettings(input: Partial<PayoutSettings>) {
 
 /** Nigeria has no daylight saving: Lagos is UTC+1 all year. */
 const LAGOS_OFFSET_MS = 3600_000;
+
+/** When money earned at `at` can be withdrawn: `hour` o'clock (Lagos) on the next Lagos day. */
+export function clearingTime(at: Date, hour: number) {
+  const lagos = new Date(at.getTime() + LAGOS_OFFSET_MS);
+  return new Date(Date.UTC(lagos.getUTCFullYear(), lagos.getUTCMonth(), lagos.getUTCDate() + 1, hour) - LAGOS_OFFSET_MS);
+}
 
 /** This week's scheduled moment (UTC) and a stable key for the week it belongs to. */
 export function scheduledSlot(settings: Pick<PayoutSettings, 'weekday' | 'hour'>, now = new Date()) {

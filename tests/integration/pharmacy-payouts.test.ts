@@ -8,7 +8,7 @@ import { newId } from '../../src/lib/ids.js';
 import { signAdminAccessToken, signPharmacyAccessToken, signPharmacyStaffAccessToken } from '../../src/lib/tokens.js';
 import { sweepUnsettledOrders } from '../../src/modules/payouts/payouts.ledger.js';
 import { handleTransferEvent, reconcilePayouts, runWeeklyPayouts } from '../../src/modules/payouts/payouts.service.js';
-import { savePayoutSettings, scheduledSlot } from '../../src/modules/payouts/payouts.settings.js';
+import { clearingTime, savePayoutSettings, scheduledSlot } from '../../src/modules/payouts/payouts.settings.js';
 import { api, createUser, resetDatabase } from '../helpers.js';
 
 const portal = '/api/v1/pharmacy-portal';
@@ -53,11 +53,13 @@ async function setup() {
   };
 }
 
-async function deliveredOrder(ctx: Awaited<ReturnType<typeof setup>>, earning: number) {
+/** Delivers an order; by default also lets its earning clear, as if 6 AM next day has come. */
+async function deliveredOrder(ctx: Awaited<ReturnType<typeof setup>>, earning: number, options: { cleared?: boolean } = {}) {
   const id = newId();
   await db.insert(orders).values({ id, userId: ctx.customerId, pharmacyId: ctx.pharmacyId, trackingId: id.slice(0, 10).toUpperCase(), status: 'delivering', subtotal: earning, deliveryFee: 0, totalAmount: earning, pharmacyEarning: earning });
   const res = await api().post(`${portal}/orders/${id}/actions`).set('Authorization', ctx.owner).send({ action: 'deliver' });
   expect(res.status).toBe(200);
+  if (options.cleared !== false) await db.update(pharmacyLedger).set({ availableAt: new Date(Date.now() - 1000) }).where(eq(pharmacyLedger.orderId, id));
   return id;
 }
 
@@ -73,15 +75,22 @@ describe('pharmacy earnings and payouts', () => {
   });
   afterEach(() => setTransferGateway(null));
 
-  it('credits a delivered order once, holds it for the 24h clearing period, and frees it when the period is shortened', async () => {
+  it('credits a delivered order once and clears it at 6 AM Lagos the next day', async () => {
     const ctx = await setup();
-    const orderId = await deliveredOrder(ctx, 9500);
+    const orderId = await deliveredOrder(ctx, 9500, { cleared: false });
     expect(await summary(ctx)).toMatchObject({ balance: 9500, available: 0, pending: 9500 });
     expect(await sweepUnsettledOrders()).toBe(0);
-    await savePayoutSettings({ clearingHours: 0 });
-    expect(await summary(ctx)).toMatchObject({ available: 9500, pending: 0 });
     const [entry] = await db.select().from(pharmacyLedger).where(eq(pharmacyLedger.orderId, orderId));
-    expect(entry!.availableAt.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(entry!.availableAt.toISOString()).toBe(clearingTime(entry!.createdAt, 6).toISOString());
+    expect(entry!.availableAt.getUTCHours()).toBe(5);
+  });
+
+  it('moves waiting earnings when the clearing hour changes', async () => {
+    const ctx = await setup();
+    const orderId = await deliveredOrder(ctx, 9500, { cleared: false });
+    await savePayoutSettings({ clearingHour: 9 });
+    const [entry] = await db.select().from(pharmacyLedger).where(eq(pharmacyLedger.orderId, orderId));
+    expect(entry!.availableAt.toISOString()).toBe(clearingTime(entry!.createdAt, 9).toISOString());
   });
 
   it('reverses the earning when an admin undoes a completed order, and re-credits it', async () => {
@@ -106,7 +115,6 @@ describe('pharmacy earnings and payouts', () => {
 
   it('runs an on-demand withdrawal from request to paid', async () => {
     const ctx = await setup();
-    await savePayoutSettings({ clearingHours: 0 });
     await deliveredOrder(ctx, 10000);
     expect((await api().post(`${portal}/payouts`).set('Authorization', ctx.owner).send({ amount: 5000 })).body.error.code).toBe('NO_BANK_ACCOUNT');
     await addBank(ctx);
@@ -134,7 +142,6 @@ describe('pharmacy earnings and payouts', () => {
 
   it('keeps a refused transfer in the queue and returns money when a transfer fails', async () => {
     const ctx = await setup();
-    await savePayoutSettings({ clearingHours: 0 });
     await deliveredOrder(ctx, 8000);
     await addBank(ctx);
     const { body: payout } = await api().post(`${portal}/payouts`).set('Authorization', ctx.owner).send({ amount: 8000 });
@@ -154,7 +161,6 @@ describe('pharmacy earnings and payouts', () => {
 
   it('lets the owner cancel and an admin decline, returning the money each time', async () => {
     const ctx = await setup();
-    await savePayoutSettings({ clearingHours: 0 });
     await deliveredOrder(ctx, 3000);
     await addBank(ctx);
     const first = await api().post(`${portal}/payouts`).set('Authorization', ctx.owner).send({ amount: 3000 });
@@ -168,7 +174,7 @@ describe('pharmacy earnings and payouts', () => {
 
   it('pays out weekly once per slot, skipping pharmacies with a payout in progress', async () => {
     const ctx = await setup();
-    await savePayoutSettings({ clearingHours: 0, autoApproveScheduled: false });
+    await savePayoutSettings({ autoApproveScheduled: false });
     await deliveredOrder(ctx, 5000);
     await addBank(ctx);
     const run = await runWeeklyPayouts();
@@ -193,6 +199,16 @@ describe('pharmacy earnings and payouts', () => {
     const ledger = await api().get(`${admin}/pharmacies/${ctx.pharmacyId}/ledger`).set('Authorization', ctx.admin);
     expect(ledger.body.items[0]).toMatchObject({ type: 'adjustment', amount: 12500, createdBy: expect.stringContaining('Ops Admin') });
     expect((await api().post(`${admin}/pharmacies/${ctx.pharmacyId}/ledger-adjustments`).set('Authorization', ctx.admin).send({ amount: -20000, reason: 'Too much' })).status).toBe(400);
+  });
+});
+
+describe('daily clearing time', () => {
+  it('clears at 6 AM Lagos on the next Lagos day, whatever time the order was delivered', () => {
+    // 09:00 and 23:30 Lagos on Tuesday 13 Oct both clear at 06:00 Lagos Wednesday (05:00 UTC).
+    expect(clearingTime(new Date('2026-10-13T08:00:00Z'), 6).toISOString()).toBe('2026-10-14T05:00:00.000Z');
+    expect(clearingTime(new Date('2026-10-13T22:30:00Z'), 6).toISOString()).toBe('2026-10-14T05:00:00.000Z');
+    // 00:30 Lagos Wednesday is already Wednesday in Lagos (23:30 UTC Tuesday): clears Thursday.
+    expect(clearingTime(new Date('2026-10-13T23:30:00Z'), 6).toISOString()).toBe('2026-10-15T05:00:00.000Z');
   });
 });
 

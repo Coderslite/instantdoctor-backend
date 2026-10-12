@@ -1641,7 +1641,7 @@ const BankAccount = z.object({ bankCode: z.string(), bankName: z.string(), accou
 const PayoutSummary = z.object({
   balance: z.number(), available: z.number().meta({ description: 'Withdrawable now' }), pending: z.number().meta({ description: 'Still in the clearing period' }),
   currency: z.string(), totalPaidOut: z.number(), openPayout: Payout.nullable(), bankAccount: BankAccount.nullable(),
-  clearingHours: z.number(), nextWeeklyPayoutAt: z.iso.datetime().nullable(),
+  clearingHour: z.number().meta({ description: 'Earnings clear at this Lagos hour on the day after delivery' }), nextWeeklyPayoutAt: z.iso.datetime().nullable(),
 });
 const page = <T extends z.ZodType>(item: T) => z.object({ items: z.array(item), total: z.number(), limit: z.number(), offset: z.number() });
 const PAYOUT_FLOW = 'Earnings from delivered orders land in the pharmacy ledger and become withdrawable after the clearing period. A withdrawal reserves the money at once and waits for an admin; approval sends a Paystack Transfer to the verified bank account, and `transfer.*` webhooks settle it. Pharmacies that did not withdraw are paid out weekly.';

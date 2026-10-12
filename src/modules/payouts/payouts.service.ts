@@ -81,7 +81,7 @@ export async function summary(pharmacyId: string) {
     totalPaidOut: round2(Number(paid?.total ?? 0)),
     openPayout: open ?? null,
     bankAccount: account,
-    clearingHours: settings.clearingHours,
+    clearingHour: settings.clearingHour,
     nextWeeklyPayoutAt: settings.weeklyEnabled ? slot.next.toISOString() : null,
   };
 }
