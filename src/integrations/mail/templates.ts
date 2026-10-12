@@ -483,6 +483,78 @@ export function pharmacyNewReview(input: {
   return { subject: `New ${input.rating}-star review – ${BRAND.name}`, html, text };
 }
 
+const naira = (amount: number) => `₦${amount.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const PAYOUT_COPY = {
+  requested: { subject: 'Withdrawal request received', title: 'We received your withdrawal request', body: 'It is being reviewed and will be sent to your bank account shortly. You will get another email when it is paid.' },
+  scheduled: { subject: 'Your weekly payout is on its way', title: 'Your weekly payout is being prepared', body: 'Your available earnings for the week are being sent to your bank account. You will get another email when it is paid.' },
+  paid: { subject: 'Payout sent to your bank', title: 'Your payout has been sent', body: 'The money has been sent to your bank account. Depending on your bank, it may take a few minutes to reflect.' },
+  failed: { subject: 'Payout could not be completed', title: 'Your payout did not go through', body: 'The bank transfer failed, so the amount is back in your available balance. Check your bank details in the workspace; we will try again with your next payout.' },
+  rejected: { subject: 'Withdrawal request declined', title: 'Your withdrawal request was declined', body: 'The amount is back in your available balance.' },
+} as const;
+
+export function pharmacyPayoutUpdate(input: {
+  event: keyof typeof PAYOUT_COPY;
+  pharmacyName?: string | null;
+  amount: number;
+  reference: string;
+  bankName: string;
+  accountNumber: string;
+  reason?: string | null;
+}): RenderedMail {
+  const copy = PAYOUT_COPY[input.event];
+  const account = `${input.bankName} · ••••${input.accountNumber.slice(-4)}`;
+  const html = layout({
+    preheader: `${copy.title}: ${naira(input.amount)}.`,
+    body: [
+      heading(copy.title),
+      paragraph(escapeHtml(input.pharmacyName?.trim() ? `Hello ${input.pharmacyName.trim()},` : 'Hello,')),
+      paragraph(escapeHtml(copy.body)),
+      detailsTable([
+        ['Amount', naira(input.amount)],
+        ['Bank account', account],
+        ['Reference', input.reference],
+      ]),
+      ...(input.reason ? [notice(escapeHtml(`Reason: ${input.reason}`), 'warning')] : []),
+      muted('See every payout and earning on the Earnings & payouts page of your workspace.'),
+    ].join(''),
+  });
+  return { subject: `${copy.subject} – ${BRAND.name}`, html, text: plainText([copy.title, copy.body, `Amount: ${naira(input.amount)}`, `Bank account: ${account}`, `Reference: ${input.reference}`, input.reason ? `Reason: ${input.reason}` : null]) };
+}
+
+export function pharmacyBankAccountChanged(input: { pharmacyName?: string | null; bankName: string; accountNumber: string; accountName: string; changedBy: string; at: Date }): RenderedMail {
+  const account = `${input.bankName} · ••••${input.accountNumber.slice(-4)}`;
+  const html = layout({
+    preheader: 'Your payout bank account was changed.',
+    body: [
+      heading('Payout bank account changed'),
+      paragraph(escapeHtml(input.pharmacyName?.trim() ? `Hello ${input.pharmacyName.trim()},` : 'Hello,')),
+      paragraph('Future payouts will be sent to this account:'),
+      detailsTable([
+        ['Account', account],
+        ['Account name', input.accountName],
+        ['Changed by', input.changedBy],
+        ['When', formatTime(input.at)],
+      ]),
+      notice('If you did not make this change, sign in and change your password immediately, then contact Instant Doctor support.', 'warning'),
+    ].join(''),
+  });
+  return { subject: `Payout bank account changed – ${BRAND.name}`, html, text: plainText(['Your payout bank account was changed.', `Account: ${account} (${input.accountName})`, `Changed by: ${input.changedBy}`, 'If you did not make this change, contact Instant Doctor support immediately.']) };
+}
+
+export function opsPayoutRequested(input: { pharmacyName: string; amount: number; reference: string; trigger: 'on_demand' | 'scheduled'; count?: number }): RenderedMail {
+  const title = input.trigger === 'scheduled' ? `Weekly payouts ready for approval (${input.count ?? 1})` : `Withdrawal request from ${input.pharmacyName}`;
+  const html = layout({
+    preheader: `${title}: ${naira(input.amount)}.`,
+    body: [
+      heading(title),
+      detailsTable(input.trigger === 'scheduled' ? [['Payouts', String(input.count ?? 1)], ['Total', naira(input.amount)]] : [['Pharmacy', input.pharmacyName], ['Amount', naira(input.amount)], ['Reference', input.reference]]),
+      button('Review payouts', `${env.ADMIN_URL}/finance/payouts`),
+    ].join(''),
+  });
+  return { subject: `${title} – ${BRAND.name}`, html, text: plainText([title, `Amount: ${naira(input.amount)}`, `Review: ${env.ADMIN_URL}/finance/payouts`]) };
+}
+
 export function opsActivity(input: {
   activity: string;
   user: {

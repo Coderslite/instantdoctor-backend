@@ -8,6 +8,7 @@ import { newId } from '../../lib/ids.js';
 import { signPharmacyAccessToken, signPharmacyStaffAccessToken } from '../../lib/tokens.js';
 import { closeAllPortalSessions, closePortalSession, openPortalSession, rotatePortalSession } from '../auth/portal-sessions.js';
 import { resolveFileUrl } from '../files/files.service.js';
+import { settleOrder } from '../payouts/payouts.ledger.js';
 
 type ListInput = { search?: string; status?: string; categoryId?: string; stock?: 'in_stock' | 'low_stock' | 'out_of_stock'; limit: number; offset: number };
 const searchTerm = (value?: string) => value ? `%${value}%` : undefined;
@@ -222,7 +223,10 @@ export async function updateOrderStatus(pharmacyId: string, id: string, status: 
   if (!allowed[order.status]?.includes(status)) {
     throw badRequest(`Order cannot move from ${order.status} to ${status}`);
   }
-  await db.update(orders).set({ status }).where(eq(orders.id, id));
+  await db.transaction(async (tx) => {
+    await tx.update(orders).set({ status }).where(eq(orders.id, id));
+    await settleOrder(tx, id);
+  });
   return getOrder(pharmacyId, id);
 }
 

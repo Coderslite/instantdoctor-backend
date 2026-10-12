@@ -24,6 +24,7 @@ import { round2 } from '../../lib/money.js';
 import { getFeePolicy, orderSurcharge } from '../pricing/fees.js';
 import type { cartSchema, checkoutSchema } from './pharmacy.schemas.js';
 import { resolveFileUrl } from '../files/files.service.js';
+import { settleOrder } from '../payouts/payouts.ledger.js';
 
 /** Pharmacy catalogue prices are in NGN. */
 export const PHARMACY_CURRENCY = 'NGN';
@@ -328,6 +329,7 @@ export async function confirmDelivery(userId: string, orderId: string) {
   if (order.status !== 'delivering') throw badRequest('Only an order that is on its way can be confirmed');
   await db.transaction(async (tx) => {
     await tx.update(orders).set({ status: 'completed' }).where(eq(orders.id, orderId));
+    await settleOrder(tx, orderId);
     await recordOrderEvent(tx, orderId, 'completed', 'customer', 'Customer confirmed delivery');
   });
   return getOrder(userId, orderId);

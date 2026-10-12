@@ -31,6 +31,7 @@ import {
   setupComplete,
   storeStatus,
 } from '../pharmacy/marketplace.js';
+import { settleOrder } from '../payouts/payouts.ledger.js';
 
 type Pharmacy = typeof pharmacies.$inferSelect;
 type OrderStatus = (typeof orders.$inferSelect)['status'];
@@ -193,6 +194,7 @@ export async function actOnOrder(pharmacyId: string, id: string, input: OrderAct
       case 'deliver': {
         expect(order, ['delivering'], 'marked delivered');
         await tx.update(orders).set({ status: 'completed' }).where(eq(orders.id, id));
+        await settleOrder(tx, id);
         await recordOrderEvent(tx, id, 'completed', 'pharmacy', 'Delivered');
         return customerOrderUpdate(tx, id, 'completed');
       }

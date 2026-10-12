@@ -29,6 +29,7 @@ import { reserveSlotForPayment } from '../appointments/appointments.service.js';
 import { feePolicySchema, getFeePolicy, orderSurcharge } from '../pricing/fees.js';
 import { WALLET_CURRENCY } from '../wallet/wallet.ledger.js';
 import { familySubscriptionPrice, requireFamilySubscription } from '../subscriptions/subscriptions.service.js';
+import { handleTransferEvent } from '../payouts/payouts.service.js';
 import { runEffects, type Effect } from './effects.js';
 import {
   confirmAppointment,
@@ -622,14 +623,17 @@ export async function handleWebhook(
       .from(paymentWebhookEvents)
       .where(and(eq(paymentWebhookEvents.provider, providerName), eq(paymentWebhookEvents.eventId, event.eventId)));
     if (existing?.processedAt) return { status: 'duplicate' as const };
-    return processWebhookEvent(providerName, existing!.id, event.reference);
+    return processWebhookEvent(providerName, existing!.id, event.reference, event.eventType);
   }
-  return processWebhookEvent(providerName, eventRowId, event.reference);
+  return processWebhookEvent(providerName, eventRowId, event.reference, event.eventType);
 }
 
-async function processWebhookEvent(providerName: PaymentProviderName, eventRowId: string, reference: string | null) {
+async function processWebhookEvent(providerName: PaymentProviderName, eventRowId: string, reference: string | null, eventType?: string) {
   try {
-    if (reference) {
+    // Paystack transfer events are pharmacy payouts, not customer payments.
+    if (providerName === 'paystack' && eventType?.startsWith('transfer.')) {
+      await handleTransferEvent(reference);
+    } else if (reference) {
       const [payment] = await db
         .select()
         .from(payments)

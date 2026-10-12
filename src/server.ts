@@ -6,6 +6,8 @@ import { logger } from './lib/logger.js';
 import { purgeExpiredIdempotencyKeys } from './middleware/idempotency.js';
 import { purgeAbandonedUploads, purgeUnclaimedApplicantFiles } from './modules/files/files.service.js';
 import { reconcilePendingPayments } from './modules/payments/payments.service.js';
+import { sweepUnsettledOrders } from './modules/payouts/payouts.ledger.js';
+import { reconcilePayouts, runWeeklyPayouts } from './modules/payouts/payouts.service.js';
 import { closeRealtime, initRealtime } from './realtime/gateway.js';
 
 const app = createApp();
@@ -49,6 +51,27 @@ const paymentSweep = setInterval(reconcilePayments, 10 * 60 * 1000);
 paymentSweep.unref();
 setTimeout(reconcilePayments, 60 * 1000).unref();
 
+// Pharmacy money: credit completed orders the ledger missed, settle transfers whose
+// webhook never came, and start the weekly payout when its time comes.
+let payoutsBusy = false;
+const payoutJobs = () => {
+  if (payoutsBusy) return;
+  payoutsBusy = true;
+  (async () => {
+    const credited = await sweepUnsettledOrders();
+    if (credited) logger.info({ credited }, 'Pharmacy earnings credited by sweep');
+    const settled = await reconcilePayouts();
+    if (settled) logger.info({ settled }, 'Pharmacy payouts reconciled');
+    const run = await runWeeklyPayouts();
+    if (run) logger.info(run, 'Weekly pharmacy payouts created');
+  })()
+    .catch((err: unknown) => logger.error({ err }, 'Payout jobs failed'))
+    .finally(() => (payoutsBusy = false));
+};
+const payoutSweep = setInterval(payoutJobs, 5 * 60 * 1000);
+payoutSweep.unref();
+setTimeout(payoutJobs, 90 * 1000).unref();
+
 let shuttingDown = false;
 async function shutdown(signal: string) {
   if (shuttingDown) return;
@@ -56,6 +79,7 @@ async function shutdown(signal: string) {
   logger.info({ signal }, 'Shutting down');
   clearInterval(housekeeping);
   clearInterval(paymentSweep);
+  clearInterval(payoutSweep);
   const force = setTimeout(() => process.exit(1), 15_000);
   force.unref();
   server.close();

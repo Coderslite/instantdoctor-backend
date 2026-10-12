@@ -47,6 +47,15 @@ export const mailer = {
   pharmacyNewReview: (input: { to: string } & Parameters<typeof templates.pharmacyNewReview>[0]) =>
     send(input.to, 'pharmacy-review', templates.pharmacyNewReview(input)),
 
+  pharmacyPayoutUpdate: (input: { to: string } & Parameters<typeof templates.pharmacyPayoutUpdate>[0]) =>
+    send(input.to, `pharmacy-payout-${input.event}`, templates.pharmacyPayoutUpdate(input)),
+
+  pharmacyBankAccountChanged: (input: { to: string } & Parameters<typeof templates.pharmacyBankAccountChanged>[0]) =>
+    send(input.to, 'pharmacy-bank-account', templates.pharmacyBankAccountChanged(input)),
+
+  opsPayoutRequested: (input: Parameters<typeof templates.opsPayoutRequested>[0]) =>
+    send(env.OPS_EMAIL, 'ops-payout', templates.opsPayoutRequested(input)),
+
   appointmentUpdate: (input: { to: string } & templates.AppointmentEmailInput) =>
     send(input.to, `appointment-${input.event}`, templates.appointmentUpdate(input)),
 

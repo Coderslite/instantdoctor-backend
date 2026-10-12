@@ -9,6 +9,8 @@ import * as schemas from './pharmacy-portal.schemas.js';
 import * as service from './pharmacy-portal.service.js';
 import * as store from './pharmacy-portal.marketplace.js';
 import * as pos from './pharmacy-portal.pos.js';
+import * as payoutSchemas from '../payouts/payouts.schemas.js';
+import * as payouts from '../payouts/payouts.service.js';
 import { purposeOf } from '../files/files.routes.js';
 import { presignUploadSchema } from '../files/files.schemas.js';
 import { completeUpload, createUpload, uploadFile } from '../files/files.service.js';
@@ -318,6 +320,34 @@ pharmacyPortalRouter.get('/pos/summary', canManage, async (req, res) => {
   const { from, to } = parse(schemas.posSummarySchema, req.query);
   res.json(await pos.summary(currentPharmacy(req).pharmacyId, from, to));
 });
+// ─── Earnings & payouts: managers can see them, only the owner moves money ───
+const canSeeMoney = requirePharmacyRoles('manager');
+const ownerOnly = requirePharmacyRoles();
+const actorName = async (req: Parameters<typeof currentPharmacy>[0]) => {
+  const auth = currentPharmacy(req);
+  return pos.accountName(auth, (await service.profile(auth.pharmacyId)).name);
+};
+pharmacyPortalRouter.get('/payouts/summary', canSeeMoney, async (req, res) =>
+  res.json(await payouts.summary(currentPharmacy(req).pharmacyId)),
+);
+pharmacyPortalRouter.get('/payouts', canSeeMoney, async (req, res) =>
+  res.json(await payouts.listPayouts(currentPharmacy(req).pharmacyId, parse(payoutSchemas.payoutListSchema, req.query))),
+);
+pharmacyPortalRouter.get('/payouts/ledger', canSeeMoney, async (req, res) =>
+  res.json(await payouts.ledger(currentPharmacy(req).pharmacyId, parse(payoutSchemas.pageSchema, req.query))),
+);
+pharmacyPortalRouter.get('/payouts/banks', ownerOnly, async (_req, res) =>
+  res.json({ items: await payouts.listBanks() }),
+);
+pharmacyPortalRouter.put('/payouts/bank-account', ownerOnly, async (req, res) =>
+  res.json(await payouts.saveBankAccount(currentPharmacy(req).pharmacyId, parse(payoutSchemas.bankAccountSchema, req.body), await actorName(req))),
+);
+pharmacyPortalRouter.post('/payouts', ownerOnly, async (req, res) =>
+  res.status(201).json(await payouts.requestPayout(currentPharmacy(req).pharmacyId, { amount: parse(payoutSchemas.payoutRequestSchema, req.body).amount, requestedBy: await actorName(req) })),
+);
+pharmacyPortalRouter.post('/payouts/:id/cancel', ownerOnly, async (req, res) =>
+  res.json(await payouts.cancelPayout(currentPharmacy(req).pharmacyId, String(req.params.id), await actorName(req))),
+);
 pharmacyPortalRouter.get('/orders-board', canWorkOrders, async (req, res) =>
   res.json(await store.boardCounts(currentPharmacy(req).pharmacyId)),
 );

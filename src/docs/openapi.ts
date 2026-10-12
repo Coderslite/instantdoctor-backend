@@ -20,6 +20,7 @@ import * as family from '../modules/family/family.schemas.js';
 import { initializePaymentSchema } from '../modules/payments/payments.service.js';
 import * as pharmacy from '../modules/pharmacy/pharmacy.schemas.js';
 import * as pharmacyPortal from '../modules/pharmacy-portal/pharmacy-portal.schemas.js';
+import * as payoutSchemas from '../modules/payouts/payouts.schemas.js';
 import { feePolicyInputSchema } from '../modules/pricing/fees.js';
 import { listReferralsQuery } from '../modules/referrals/referrals.schemas.js';
 import * as reports from '../modules/reports/reports.schemas.js';
@@ -1624,6 +1625,46 @@ op('get', '/pharmacy-portal/pos/summary', {
     }),
   },
 });
+const Payout = z.object({
+  id: z.string(), pharmacyId: z.string(), reference: z.string(), amount: z.number(), currency: z.string(),
+  trigger: z.enum(['on_demand', 'scheduled']), status: z.enum(['pending_approval', 'processing', 'paid', 'failed', 'rejected', 'cancelled']),
+  bankName: z.string(), accountNumber: z.string(), accountName: z.string(), requestedBy: z.string(),
+  approvedBy: z.string().nullable(), approvedAt: z.date().nullable(), transferCode: z.string().nullable(),
+  rejectionReason: z.string().nullable(), lastError: z.string().nullable(), paidAt: z.date().nullable(), createdAt: z.date(),
+}).meta({ id: 'PharmacyPayout' });
+const LedgerEntry = z.object({
+  id: z.string(), type: z.enum(['order_earning', 'order_reversal', 'payout', 'payout_reversal', 'adjustment']), amount: z.number(),
+  balanceAfter: z.number(), description: z.string(), orderId: z.string().nullable(), payoutId: z.string().nullable(),
+  createdBy: z.string().nullable(), availableAt: z.date(), createdAt: z.date(),
+}).meta({ id: 'PharmacyLedgerEntry' });
+const BankAccount = z.object({ bankCode: z.string(), bankName: z.string(), accountNumber: z.string(), accountName: z.string(), updatedAt: z.date() }).meta({ id: 'PharmacyBankAccount' });
+const PayoutSummary = z.object({
+  balance: z.number(), available: z.number().meta({ description: 'Withdrawable now' }), pending: z.number().meta({ description: 'Still in the clearing period' }),
+  currency: z.string(), totalPaidOut: z.number(), openPayout: Payout.nullable(), bankAccount: BankAccount.nullable(),
+  clearingHours: z.number(), nextWeeklyPayoutAt: z.iso.datetime().nullable(),
+});
+const page = <T extends z.ZodType>(item: T) => z.object({ items: z.array(item), total: z.number(), limit: z.number(), offset: z.number() });
+const PAYOUT_FLOW = 'Earnings from delivered orders land in the pharmacy ledger and become withdrawable after the clearing period. A withdrawal reserves the money at once and waits for an admin; approval sends a Paystack Transfer to the verified bank account, and `transfer.*` webhooks settle it. Pharmacies that did not withdraw are paid out weekly.';
+
+op('get', '/pharmacy-portal/payouts/summary', { tag: 'Pharmacy portal', summary: 'Balances, bank account and the payout in progress', description: `${PAYOUT_FLOW}\n\nOwner or manager.`, ok: { 200: PayoutSummary } });
+op('get', '/pharmacy-portal/payouts', { tag: 'Pharmacy portal', summary: 'Payout history', query: payoutSchemas.payoutListSchema, ok: { 200: page(Payout) } });
+op('get', '/pharmacy-portal/payouts/ledger', { tag: 'Pharmacy portal', summary: 'Earnings statement (every credit and debit)', query: payoutSchemas.pageSchema, ok: { 200: page(LedgerEntry) } });
+op('get', '/pharmacy-portal/payouts/banks', { tag: 'Pharmacy portal', summary: 'Nigerian banks payouts can be sent to', description: 'Owner only.', ok: { 200: z.object({ items: z.array(z.object({ name: z.string(), code: z.string() })) }) } });
+op('put', '/pharmacy-portal/payouts/bank-account', { tag: 'Pharmacy portal', summary: 'Set the payout bank account', description: 'Owner only. The account is resolved with the bank and the bank’s account name is stored. The owner is emailed on every change. Blocked while a payout is in progress.', body: payoutSchemas.bankAccountSchema, ok: { 200: BankAccount }, errors: { 409: 'PAYOUT_IN_PROGRESS', 422: 'ACCOUNT_NOT_FOUND' } });
+op('post', '/pharmacy-portal/payouts', { tag: 'Pharmacy portal', summary: 'Request a withdrawal', description: 'Owner only. Reserves the amount from the available balance and queues it for admin approval. One payout in progress at a time.', body: payoutSchemas.payoutRequestSchema, ok: { 201: Payout }, errors: { 409: 'PAYOUT_IN_PROGRESS', 422: 'NO_BANK_ACCOUNT | INSUFFICIENT_BALANCE' } });
+op('post', '/pharmacy-portal/payouts/:id/cancel', { tag: 'Pharmacy portal', summary: 'Cancel a withdrawal awaiting approval', params: idParam, ok: { 200: Payout } });
+
+op('get', '/admin/payouts/overview', { tag: 'Admin', summary: 'Payout queue totals, next weekly run and settings', description: PAYOUT_FLOW, ok: { 200: z.record(z.string(), z.unknown()) } });
+op('get', '/admin/payouts', { tag: 'Admin', summary: 'All pharmacy payouts', query: payoutSchemas.payoutListSchema, ok: { 200: page(Payout.extend({ pharmacyName: z.string() })) } });
+op('get', '/admin/payouts/balances', { tag: 'Admin', summary: 'What each pharmacy is owed', query: payoutSchemas.balancesListSchema, ok: { 200: page(z.record(z.string(), z.unknown())) } });
+op('get', '/admin/payouts/gateway-balance', { tag: 'Admin', summary: 'Paystack balance available for transfers', ok: { 200: z.object({ balance: z.object({ currency: z.string(), amount: z.number() }).nullable() }) } });
+op('put', '/admin/payouts/settings', { tag: 'Admin', summary: 'Weekly schedule, clearing period, auto-approval', body: payoutSchemas.settingsUpdateSchema, ok: { 200: z.record(z.string(), z.unknown()) } });
+op('post', '/admin/payouts/run-weekly', { tag: 'Admin', summary: 'Create this week’s payouts now', ok: { 200: z.object({ runId: z.string(), payoutCount: z.number(), totalAmount: z.number() }).nullable() } });
+op('post', '/admin/payouts/approve', { tag: 'Admin', summary: 'Approve and send several payouts', description: 'Stops early if Paystack reports its balance is too low.', body: payoutSchemas.approveManySchema, ok: { 200: z.object({ results: z.array(z.object({ id: z.string(), ok: z.boolean(), status: z.string().optional(), error: z.string().optional() })) }) } });
+op('post', '/admin/payouts/:id/approve', { tag: 'Admin', summary: 'Approve a payout and send it via Paystack', description: 'A Paystack refusal returns the payout to the approval queue with `lastError`; an unknown outcome leaves it processing until the webhook or reconciliation settles it.', params: idParam, ok: { 200: Payout }, errors: { 422: 'TRANSFER_REFUSED' } });
+op('post', '/admin/payouts/:id/reject', { tag: 'Admin', summary: 'Decline a payout; the money returns to the pharmacy balance', params: idParam, body: payoutSchemas.rejectSchema, ok: { 200: Payout } });
+op('get', '/admin/pharmacies/:id/ledger', { tag: 'Admin', summary: 'A pharmacy’s earnings statement and payout summary', params: idParam, query: payoutSchemas.pageSchema, ok: { 200: page(LedgerEntry).extend({ summary: PayoutSummary }) } });
+op('post', '/admin/pharmacies/:id/ledger-adjustments', { tag: 'Admin', summary: 'Credit or debit a pharmacy balance with a reason', params: idParam, body: payoutSchemas.adjustmentSchema, ok: { 200: z.object({ balance: z.number(), available: z.number(), pending: z.number() }) } });
 const DIRECT_UPLOAD = [
   '**Preferred upload flow** — the file goes straight to storage, never through the API:',
   '1. `POST …/uploads/presign` with `purpose`, `contentType`, exact `size` (bytes) and optional `name`. The purpose policy (type, size, who may upload) is checked here.',

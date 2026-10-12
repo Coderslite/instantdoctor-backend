@@ -50,6 +50,7 @@ import { escapeHtml, layout, paragraph, plainText } from '../../integrations/mai
 import { sendPush } from '../../integrations/push.js';
 import { createNotification } from '../notifications/notifications.service.js';
 import { COMMERCIAL_FEES_SETTINGS_KEY, getFeePolicy, type FeePolicy } from '../pricing/fees.js';
+import { settleOrder } from '../payouts/payouts.ledger.js';
 
 type ListQuery = { search?: string; status?: string; limit: number; offset: number };
 const patient = alias(users, 'patient');
@@ -1179,7 +1180,11 @@ export async function setOrderStatus(
 ) {
   const [item] = await db.select({ id: orders.id }).from(orders).where(eq(orders.id, id)).limit(1);
   if (!item) throw notFound('Order');
-  await db.update(orders).set({ status }).where(eq(orders.id, id));
+  // The pharmacy's earning follows the order: credited on completion, reversed if it's undone.
+  await db.transaction(async (tx) => {
+    await tx.update(orders).set({ status }).where(eq(orders.id, id));
+    await settleOrder(tx, id);
+  });
   return { id, status };
 }
 

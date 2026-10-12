@@ -10,6 +10,9 @@ import {
 import { refreshSchema } from '../auth/auth.schemas.js';
 import * as schemas from './admin.schemas.js';
 import * as service from './admin.service.js';
+import * as payoutSchemas from '../payouts/payouts.schemas.js';
+import * as payouts from '../payouts/payouts.service.js';
+import { savePayoutSettings } from '../payouts/payouts.settings.js';
 import { purposeOf } from '../files/files.routes.js';
 import { fileIdSchema, presignUploadSchema } from '../files/files.schemas.js';
 import { attachFile, completeUpload, createUpload, uploadFile } from '../files/files.service.js';
@@ -266,3 +269,37 @@ adminRouter.patch('/payments/:id/status', requireAdminRole('admin'), async (req,
   const { status, failureReason } = parse(schemas.paymentStatusSchema, req.body);
   res.json(await service.setPaymentStatus(String(req.params.id), status, failureReason));
 });
+
+// ─── Pharmacy payouts ───
+const actingAdmin = (req: Parameters<typeof currentAdmin>[0]) => payouts.adminDisplayName(currentAdmin(req).adminId);
+adminRouter.get('/payouts/overview', async (_req, res) => res.json(await payouts.adminOverview()));
+adminRouter.get('/payouts', async (req, res) =>
+  res.json(await payouts.listPayouts(null, parse(payoutSchemas.payoutListSchema, req.query))),
+);
+adminRouter.get('/payouts/balances', async (req, res) =>
+  res.json(await payouts.pharmacyBalances(parse(payoutSchemas.balancesListSchema, req.query))),
+);
+adminRouter.get('/payouts/gateway-balance', requireAdminRole('admin'), async (_req, res) =>
+  res.json({ balance: await payouts.gatewayBalance() }),
+);
+adminRouter.put('/payouts/settings', requireAdminRole('admin'), async (req, res) =>
+  res.json(await savePayoutSettings(parse(payoutSchemas.settingsUpdateSchema, req.body))),
+);
+adminRouter.post('/payouts/run-weekly', requireAdminRole('admin'), async (req, res) =>
+  res.json(await payouts.runWeeklyPayouts({ manual: await actingAdmin(req) })),
+);
+adminRouter.post('/payouts/approve', requireAdminRole('admin'), async (req, res) =>
+  res.json(await payouts.approvePayouts(parse(payoutSchemas.approveManySchema, req.body).ids, await actingAdmin(req))),
+);
+adminRouter.post('/payouts/:id/approve', requireAdminRole('admin'), async (req, res) =>
+  res.json(await payouts.approvePayout(String(req.params.id), await actingAdmin(req))),
+);
+adminRouter.post('/payouts/:id/reject', requireAdminRole('admin'), async (req, res) =>
+  res.json(await payouts.rejectPayout(String(req.params.id), parse(payoutSchemas.rejectSchema, req.body).reason, await actingAdmin(req))),
+);
+adminRouter.get('/pharmacies/:id/ledger', async (req, res) =>
+  res.json({ ...(await payouts.ledger(String(req.params.id), parse(payoutSchemas.pageSchema, req.query))), summary: await payouts.summary(String(req.params.id)) }),
+);
+adminRouter.post('/pharmacies/:id/ledger-adjustments', requireAdminRole('admin'), async (req, res) =>
+  res.json(await payouts.adjustBalance(String(req.params.id), parse(payoutSchemas.adjustmentSchema, req.body), await actingAdmin(req))),
+);

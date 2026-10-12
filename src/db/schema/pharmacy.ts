@@ -438,3 +438,106 @@ export const posSaleItems = mysqlTable(
   },
   (t) => [index('pos_sale_items_sale_idx').on(t.saleId)],
 );
+
+export const PHARMACY_LEDGER_TYPES = ['order_earning', 'order_reversal', 'payout', 'payout_reversal', 'adjustment'] as const;
+export type PharmacyLedgerType = (typeof PHARMACY_LEDGER_TYPES)[number];
+
+/**
+ * Every naira the platform owes a pharmacy, and every naira paid out. The
+ * pharmacy's balance is the sum of its entries; `available_at` holds new
+ * earnings back for a short clearing period before they can be withdrawn.
+ */
+export const pharmacyLedger = mysqlTable(
+  'pharmacy_ledger',
+  {
+    id: id('id').primaryKey(),
+    pharmacyId: id('pharmacy_id')
+      .notNull()
+      .references(() => pharmacies.id, { onDelete: 'cascade' }),
+    type: mysqlEnum('type', PHARMACY_LEDGER_TYPES).notNull(),
+    /** Signed: earnings and reversals of payouts are positive, payouts negative. */
+    amount: money('amount').notNull(),
+    balanceAfter: money('balance_after').notNull(),
+    description: varchar('description', { length: 255 }).notNull(),
+    orderId: id('order_id').references(() => orders.id, { onDelete: 'set null' }),
+    payoutId: id('payout_id'),
+    createdBy: varchar('created_by', { length: 255 }),
+    availableAt: timestamp('available_at').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('pharmacy_ledger_pharmacy_idx').on(t.pharmacyId, t.createdAt),
+    index('pharmacy_ledger_order_idx').on(t.orderId),
+    index('pharmacy_ledger_payout_idx').on(t.payoutId),
+  ],
+);
+
+/** Where a pharmacy's money goes: one verified Nigerian bank account. */
+export const pharmacyBankAccounts = mysqlTable('pharmacy_bank_accounts', {
+  pharmacyId: id('pharmacy_id')
+    .primaryKey()
+    .references(() => pharmacies.id, { onDelete: 'cascade' }),
+  bankCode: varchar('bank_code', { length: 32 }).notNull(),
+  bankName: varchar('bank_name', { length: 128 }).notNull(),
+  accountNumber: varchar('account_number', { length: 20 }).notNull(),
+  /** As the bank resolved it, not as typed. */
+  accountName: varchar('account_name', { length: 255 }).notNull(),
+  recipientCode: varchar('recipient_code', { length: 64 }).notNull(),
+  updatedBy: varchar('updated_by', { length: 255 }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const PAYOUT_STATUSES = ['pending_approval', 'processing', 'paid', 'failed', 'rejected', 'cancelled'] as const;
+export type PayoutStatus = (typeof PAYOUT_STATUSES)[number];
+
+export const pharmacyPayouts = mysqlTable(
+  'pharmacy_payouts',
+  {
+    id: id('id').primaryKey(),
+    pharmacyId: id('pharmacy_id')
+      .notNull()
+      .references(() => pharmacies.id, { onDelete: 'cascade' }),
+    /** Our transfer reference, also sent to Paystack. */
+    reference: varchar('reference', { length: 50 }).notNull(),
+    amount: money('amount').notNull(),
+    currency: varchar('currency', { length: 3 }).notNull().default('NGN'),
+    trigger: mysqlEnum('trigger', ['on_demand', 'scheduled']).notNull(),
+    status: mysqlEnum('status', PAYOUT_STATUSES).notNull().default('pending_approval'),
+    bankName: varchar('bank_name', { length: 128 }).notNull(),
+    accountNumber: varchar('account_number', { length: 20 }).notNull(),
+    accountName: varchar('account_name', { length: 255 }).notNull(),
+    recipientCode: varchar('recipient_code', { length: 64 }).notNull(),
+    requestedBy: varchar('requested_by', { length: 255 }).notNull(),
+    approvedBy: varchar('approved_by', { length: 255 }),
+    approvedAt: timestamp('approved_at'),
+    transferCode: varchar('transfer_code', { length: 64 }),
+    rejectionReason: varchar('rejection_reason', { length: 500 }),
+    /** The last thing that went wrong, shown to admins (e.g. Paystack balance too low). */
+    lastError: varchar('last_error', { length: 500 }),
+    paidAt: timestamp('paid_at'),
+    runId: id('run_id'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('pharmacy_payouts_reference_uq').on(t.reference),
+    index('pharmacy_payouts_pharmacy_idx').on(t.pharmacyId, t.createdAt),
+    index('pharmacy_payouts_status_idx').on(t.status, t.createdAt),
+  ],
+);
+
+/** One row per weekly payout run, so a week is never paid twice. */
+export const pharmacyPayoutRuns = mysqlTable(
+  'pharmacy_payout_runs',
+  {
+    id: id('id').primaryKey(),
+    runKey: varchar('run_key', { length: 64 }).notNull(),
+    startedBy: varchar('started_by', { length: 255 }).notNull(),
+    payoutCount: int('payout_count').notNull().default(0),
+    totalAmount: money('total_amount').notNull().default(0),
+    completedAt: timestamp('completed_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('pharmacy_payout_runs_key_uq').on(t.runKey)],
+);
