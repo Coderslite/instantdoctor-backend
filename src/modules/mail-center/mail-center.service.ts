@@ -3,6 +3,7 @@ import { env } from '../../config/env.js';
 import { db } from '../../db/client.js';
 import { adminEmailRecipients, adminEmails, admins, users } from '../../db/schema/index.js';
 import {
+  personaliseSubject,
   renderLetter,
   sanitizeLetterBody,
   type Letter,
@@ -155,7 +156,7 @@ const officialMail = (letter: Letter, to: Recipient, category: string) => {
   const { html, text } = renderLetter(letter, to);
   return {
     to: to.email,
-    subject: letter.subject,
+    subject: personaliseSubject(letter.subject, to),
     html,
     text,
     category,

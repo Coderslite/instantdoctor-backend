@@ -202,6 +202,32 @@ describe('admin mail centre', () => {
     expect(mail.text).toContain('Google Play: https://play.google.com');
   });
 
+  it('fills placeholders in the subject for each recipient', async () => {
+    const { token } = await createAdmin();
+    const res = await api()
+      .post('/api/v1/admin/mail')
+      .set(auth(token))
+      .send({
+        ...letter,
+        subject: 'Partnership proposal for {{organization}}',
+        emails: [
+          { email: 'info@clearline.example', organization: 'Clearline International Limited' },
+          { email: 'info@novo.example', organization: 'Novo Health Africa Limited' },
+        ],
+      });
+    await settled(token, res.body.id);
+    const clearline = outbox.find((m) => m.to === 'info@clearline.example')!;
+    const novo = outbox.find((m) => m.to === 'info@novo.example')!;
+    expect(clearline.subject).toBe('Partnership proposal for Clearline International Limited');
+    expect(novo.subject).toBe('Partnership proposal for Novo Health Africa Limited');
+    expect(novo.html).toContain('PARTNERSHIP PROPOSAL FOR NOVO HEALTH AFRICA LIMITED');
+    expect(novo.text).toContain('PARTNERSHIP PROPOSAL FOR NOVO HEALTH AFRICA LIMITED');
+    for (const mail of outbox) {
+      expect(mail.subject).not.toContain('{{');
+      expect(mail.html).not.toContain('{{');
+    }
+  });
+
   it('requires recipients and a sending role', async () => {
     const { token } = await createAdmin();
     expect((await api().post('/api/v1/admin/mail').set(auth(token)).send(letter)).status).toBe(400);

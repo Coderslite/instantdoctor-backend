@@ -128,17 +128,33 @@ export interface Letter {
 }
 
 /** {{firstName}}, {{name}} and {{email}} in the body become the recipient's details. */
-function personalise(html: string, to: LetterRecipient) {
+const PLACEHOLDER = /\{\{\s*(firstName|name|email|organization)\s*\}\}/gi;
+
+function placeholderValues(to: LetterRecipient): Record<string, string> {
   const firstName = to.firstName?.trim() || to.name?.trim().split(/\s+/)[0] || '';
-  const values: Record<string, string> = {
+  return {
     organization: to.organization?.trim() ?? '',
     firstname: firstName,
     name: to.name?.trim() || firstName,
     email: to.email,
   };
-  return html.replace(/\{\{\s*(firstName|name|email|organization)\s*\}\}/gi, (_m, key: string) =>
+}
+
+/** {{firstName}}, {{name}}, {{email}} and {{organization}} in the body become the recipient's details. */
+function personalise(html: string, to: LetterRecipient) {
+  const values = placeholderValues(to);
+  return html.replace(PLACEHOLDER, (_m, key: string) =>
     escapeHtml(values[key.toLowerCase()] ?? ''),
   );
+}
+
+/** The subject with the recipient's details filled in (plain text, for the email header and the letter). */
+export function personaliseSubject(subject: string, to: LetterRecipient) {
+  const values = placeholderValues(to);
+  return subject
+    .replace(PLACEHOLDER, (_m, key: string) => values[key.toLowerCase()] ?? '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 const formatDate = (date: Date) =>
@@ -156,6 +172,7 @@ export function renderLetter(letter: Letter, to: LetterRecipient): { html: strin
   const contactEmail = env.MAIL_OFFICIAL_REPLY_TO;
   const greetingName = salutationName(to);
   const body = personalise(letter.body, to);
+  const subject = personaliseSubject(letter.subject, to);
   const contactLines = [
     `<a href="${escapeHtml(website)}" style="color:${BRAND.deep};text-decoration:none;">${escapeHtml(website.replace(/^https?:\/\//, ''))}</a>`,
     `<a href="mailto:${escapeHtml(contactEmail)}" style="color:${BRAND.deep};text-decoration:none;">${escapeHtml(contactEmail)}</a>`,
@@ -171,10 +188,10 @@ export function renderLetter(letter: Letter, to: LetterRecipient): { html: strin
 <meta name="x-apple-disable-message-reformatting">
 <meta name="color-scheme" content="light only">
 <meta name="supported-color-schemes" content="light only">
-<title>${escapeHtml(letter.subject)}</title>
+<title>${escapeHtml(subject)}</title>
 </head>
 <body style="margin:0;padding:0;background:${BRAND.canvas};-webkit-text-size-adjust:100%;">
-<div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all;">${escapeHtml(letter.subject)} — ${escapeHtml(BRAND.name)}&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;</div>
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all;">${escapeHtml(subject)} — ${escapeHtml(BRAND.name)}&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:${BRAND.canvas};">
 <tr><td align="center" style="padding:28px 12px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:640px;background:#ffffff;border:1px solid ${BRAND.border};border-radius:4px;">
@@ -211,7 +228,7 @@ export function renderLetter(letter: Letter, to: LetterRecipient): { html: strin
     <td style="padding:24px 40px 8px;">
       ${addressLines(to).length ? `<p style="margin:0 0 22px;font-family:${font};font-size:14px;line-height:21px;color:${BRAND.ink};">${addressLines(to).map(escapeHtml).join('<br>')}</p>` : ''}
       <p style="margin:0 0 18px;font-family:${font};font-size:15px;line-height:24px;color:${BRAND.body};">Dear ${escapeHtml(greetingName || 'Sir/Madam')},</p>
-      <p style="margin:0 0 18px;font-family:${font};font-size:15px;line-height:22px;font-weight:700;color:${BRAND.ink};text-decoration:underline;text-underline-offset:3px;">${escapeHtml(letter.subject.toUpperCase())}</p>
+      <p style="margin:0 0 18px;font-family:${font};font-size:15px;line-height:22px;font-weight:700;color:${BRAND.ink};text-decoration:underline;text-underline-offset:3px;">${escapeHtml(subject.toUpperCase())}</p>
       ${body}
     </td>
   </tr>
@@ -276,7 +293,7 @@ export function renderLetter(letter: Letter, to: LetterRecipient): { html: strin
     ...(addressLines(to).length ? [...addressLines(to), ''] : []),
     `Dear ${greetingName || 'Sir/Madam'},`,
     '',
-    letter.subject.toUpperCase(),
+    subject.toUpperCase(),
     '',
     bodyText,
     '',
