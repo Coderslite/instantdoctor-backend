@@ -68,6 +68,18 @@ export const mailer = {
   doctorApplicationRejected: (input: { to: string; firstName: string; reason?: string | null }) =>
     send(input.to, 'doctor-application-rejected', templates.doctorApplicationRejected(input)),
 
+  hmoApplicationReceived: (input: { to: string } & Parameters<typeof templates.hmoApplicationReceived>[0]) =>
+    send(input.to, 'hmo-application-received', templates.hmoApplicationReceived(input)),
+
+  hmoApplicationApproved: (input: { to: string } & Parameters<typeof templates.hmoApplicationApproved>[0]) =>
+    send(input.to, 'hmo-application-approved', templates.hmoApplicationApproved(input)),
+
+  hmoApplicationRejected: (input: { to: string } & Parameters<typeof templates.hmoApplicationRejected>[0]) =>
+    send(input.to, 'hmo-application-rejected', templates.hmoApplicationRejected(input)),
+
+  opsHmoApplication: (input: Parameters<typeof templates.opsHmoApplication>[0]) =>
+    send(env.OPS_EMAIL, 'ops-hmo-application', templates.opsHmoApplication(input)),
+
   opsDoctorApplication: (input: Parameters<typeof templates.opsDoctorApplication>[0]) =>
     send(env.OPS_EMAIL, 'ops-doctor-application', templates.opsDoctorApplication(input)),
 

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   HMO_ACTIVITY_ACTORS,
+  HMO_APPLICATION_STATUSES,
   HMO_CLAIM_STATUSES,
   HMO_COVERAGE_TYPES,
   HMO_ENROLLEE_STATUSES,
@@ -292,3 +293,35 @@ export const activityQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
+
+// ── Partnership applications ────────────────────────────────────────────────
+
+export const applicationSchema = z.object({
+  organisation: text(200).min(2, 'Enter your HMO’s name'),
+  contactName: text(200).min(1, 'Enter your name'),
+  contactRole: optional(120),
+  email: z.email().trim().toLowerCase().max(191),
+  phone: optional(32),
+  enrollees: optional(40),
+  services: z.array(text(60).min(1)).max(10).default([]),
+  message: optional(5000),
+});
+
+export const applicationsQuery = z.object({
+  status: z.enum(HMO_APPLICATION_STATUSES).optional(),
+  search: z.string().trim().max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+/** The HMO to create, and who gets its first portal admin account. */
+export const approveApplicationSchema = hmoSchema
+  .omit({ status: true })
+  .extend({
+    status: z.enum(HMO_STATUSES).default('paused'),
+    adminName: text(200).min(1),
+    adminEmail: z.email().trim().toLowerCase().max(191),
+    note: optional(2000),
+  });
+
+export const rejectApplicationSchema = z.object({ reason: text(2000).min(1, 'Give a reason') });

@@ -1,6 +1,7 @@
 import { Router, type Request } from 'express';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { isTest } from '../../config/env.js';
+import { sha256 } from '../../lib/crypto.js';
 import { conflict } from '../../lib/errors.js';
 import { parse } from '../../lib/validation.js';
 import { authenticateHmo, currentHmo, requireHmoRoles } from '../../middleware/authenticate-hmo.js';
@@ -22,12 +23,19 @@ import * as service from './hmo-portal.service.js';
  */
 export const hmoPortalRouter = Router();
 
+// The portal calls the API through its own server, so every person arrives from
+// the same few addresses. Limits are therefore per account, not per address alone,
+// or one person's typos would lock out every HMO.
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 10,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   skip: () => isTest,
+  keyGenerator: (req) => {
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    return `${ipKeyGenerator(req.ip ?? '')}:${email}`;
+  },
 });
 const refreshLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -35,6 +43,10 @@ const refreshLimiter = rateLimit({
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   skip: () => isTest,
+  keyGenerator: (req) =>
+    typeof req.body?.refreshToken === 'string'
+      ? sha256(req.body.refreshToken)
+      : ipKeyGenerator(req.ip ?? ''),
 });
 
 hmoPortalRouter.post('/auth/login', loginLimiter, async (req, res) => {

@@ -9,8 +9,10 @@ import {
   doctorApplicationsRouter,
 } from './modules/doctor-applications/doctor-applications.routes.js';
 import {
+  adminHmoApplicationsRouter,
   adminHmoLinkRequestsRouter,
   adminHmoRouter,
+  hmoApplicationsRouter,
   hmoMemberRouter,
 } from './modules/hmo/hmo.routes.js';
 import { mailCenterRouter } from './modules/mail-center/mail-center.routes.js';
@@ -45,6 +47,7 @@ apiRouter.use('/admin/blog', adminBlogRouter);
 apiRouter.use('/admin/mail', mailCenterRouter);
 apiRouter.use('/admin/hmos', adminHmoRouter);
 apiRouter.use('/admin/hmo-link-requests', adminHmoLinkRequestsRouter);
+apiRouter.use('/admin/hmo-applications', adminHmoApplicationsRouter);
 apiRouter.use('/admin/doctor-applications', adminDoctorApplicationsRouter);
 apiRouter.use('/admin', adminRouter);
 apiRouter.use('/pharmacy-portal', pharmacyPortalRouter);
@@ -57,6 +60,7 @@ apiRouter.use('/appointments', appointmentsRouter);
 apiRouter.use('/prescriptions', prescriptionsRouter);
 apiRouter.use('/payments', paymentsRouter);
 apiRouter.use('/subscriptions', subscriptionsRouter);
+apiRouter.use('/hmo-applications', hmoApplicationsRouter);
 apiRouter.use('/hmo', hmoMemberRouter);
 apiRouter.use('/wallet', walletRouter);
 apiRouter.use('/referrals', referralsRouter);

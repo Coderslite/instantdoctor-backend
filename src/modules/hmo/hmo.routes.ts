@@ -10,6 +10,7 @@ import {
 } from '../../middleware/authenticate-admin.js';
 import * as activity from './hmo.activity.js';
 import * as agreements from './hmo.agreements.js';
+import * as applications from './hmo.applications.js';
 import * as claims from './hmo.claims.js';
 import * as enrollees from './hmo.enrollees.js';
 import * as member from './hmo.member.js';
@@ -269,6 +270,47 @@ adminHmoLinkRequestsRouter.post('/:id/reject', canManage, async (req, res) =>
       currentAdmin(req).adminId,
       String(req.params.id),
       parse(schemas.rejectLinkSchema, req.body).note,
+    ),
+  ),
+);
+
+// ── Website: /hmo-applications ──────────────────────────────────────────────
+
+/** Public: the "Apply to partner" form on the website. */
+export const hmoApplicationsRouter = Router();
+hmoApplicationsRouter.post(
+  '/',
+  rateLimit({ windowMs: 60 * 60 * 1000, limit: 5, standardHeaders: 'draft-8', legacyHeaders: false, skip: () => isTest }),
+  async (req, res) =>
+    res.status(201).json(await applications.submit(parse(schemas.applicationSchema, req.body))),
+);
+
+// ── Admin: /admin/hmo-applications ──────────────────────────────────────────
+
+export const adminHmoApplicationsRouter = Router();
+adminHmoApplicationsRouter.use(authenticateAdmin);
+
+adminHmoApplicationsRouter.get('/', async (req, res) =>
+  res.json(await applications.list(parse(schemas.applicationsQuery, req.query))),
+);
+adminHmoApplicationsRouter.get('/:id', async (req, res) =>
+  res.json(await applications.get(String(req.params.id))),
+);
+adminHmoApplicationsRouter.post('/:id/approve', canManage, async (req, res) =>
+  res.json(
+    await applications.approve(
+      String(req.params.id),
+      currentAdmin(req).adminId,
+      parse(schemas.approveApplicationSchema, req.body),
+    ),
+  ),
+);
+adminHmoApplicationsRouter.post('/:id/reject', canManage, async (req, res) =>
+  res.json(
+    await applications.reject(
+      String(req.params.id),
+      currentAdmin(req).adminId,
+      parse(schemas.rejectApplicationSchema, req.body).reason,
     ),
   ),
 );

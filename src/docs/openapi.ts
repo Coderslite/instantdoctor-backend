@@ -1638,6 +1638,55 @@ op('post', '/admin/hmo-link-requests/:id/reject', {
   errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'LINK_REQUEST_CLOSED' },
 });
 
+op('get', '/admin/hmo-applications', {
+  tag: 'HMO admin',
+  summary: 'HMO partnership applications from the website',
+  description: HMO_ADMIN,
+  query: hmo.applicationsQuery,
+  ok: { 200: anyJson },
+});
+op('get', '/admin/hmo-applications/:id', {
+  tag: 'HMO admin',
+  summary: 'One HMO partnership application',
+  description: HMO_ADMIN,
+  params: idParam,
+  ok: { 200: anyJson },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('post', '/admin/hmo-applications/:id/approve', {
+  tag: 'HMO admin',
+  summary: 'Approve an application: create the HMO and its first portal admin',
+  description: `${HMO_ADMIN} The HMO is created paused unless \`status\` says otherwise. The portal admin gets a temporary password by email, also returned once in \`portalAdmin\`.`,
+  params: idParam,
+  body: hmo.approveApplicationSchema,
+  ok: {
+    200: z.object({
+      application: anyJson,
+      hmoId: z.string(),
+      portalAdmin: z.object({ email: z.string(), temporaryPassword: z.string() }),
+    }),
+  },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'APPLICATION_REVIEWED | HMO_CODE_TAKEN | EMAIL_TAKEN' },
+});
+op('post', '/admin/hmo-applications/:id/reject', {
+  tag: 'HMO admin',
+  summary: 'Reject an application; the reason is emailed to the applicant',
+  description: HMO_ADMIN,
+  params: idParam,
+  body: hmo.rejectApplicationSchema,
+  ok: { 200: anyJson },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'APPLICATION_REVIEWED' },
+});
+op('post', '/hmo-applications', {
+  tag: 'HMO admin',
+  summary: 'Apply to partner as an HMO (website form)',
+  description: 'Creates a pending application and emails the applicant a reference. Rate limited to 5 an hour.',
+  auth: false,
+  body: hmo.applicationSchema,
+  ok: { 201: z.object({ id: z.string(), reference: z.string(), status: z.literal('pending'), email: z.string() }) },
+  errors: { 409: 'APPLICATION_EXISTS — an application from this email is under review' },
+});
+
 const HmoPortalUser = z.object({
   id: z.string(),
   name: z.string(),

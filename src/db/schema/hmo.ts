@@ -329,3 +329,40 @@ export const hmoActivity = mysqlTable(
     index('hmo_activity_entity_idx').on(t.hmoId, t.entityType, t.entityId),
   ],
 );
+
+// ── Partnership applications ────────────────────────────────────────────────
+
+export const HMO_APPLICATION_STATUSES = ['pending', 'approved', 'rejected'] as const;
+export type HmoApplicationStatus = (typeof HMO_APPLICATION_STATUSES)[number];
+
+/**
+ * "Apply to partner" submissions from the website. Approving one creates the
+ * HMO and its first portal admin, whose sign-in details are emailed to them.
+ */
+export const hmoApplications = mysqlTable(
+  'hmo_applications',
+  {
+    id: id('id').primaryKey(),
+    organisation: varchar('organisation', { length: 200 }).notNull(),
+    contactName: varchar('contact_name', { length: 200 }).notNull(),
+    contactRole: varchar('contact_role', { length: 120 }),
+    email: varchar('email', { length: 191 }).notNull(),
+    phone: varchar('phone', { length: 32 }),
+    /** Rough size band chosen on the form, e.g. "1,000 – 10,000". */
+    enrollees: varchar('enrollees', { length: 40 }),
+    services: json('services').$type<string[]>().notNull(),
+    message: text('message'),
+    status: mysqlEnum('status', HMO_APPLICATION_STATUSES).notNull().default('pending'),
+    reviewNote: text('review_note'),
+    reviewedBy: id('reviewed_by').references(() => admins.id, { onDelete: 'set null' }),
+    reviewedAt: timestamp('reviewed_at'),
+    /** The HMO created on approval. */
+    hmoId: id('hmo_id').references(() => hmos.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index('hmo_applications_status_idx').on(t.status, t.createdAt),
+    index('hmo_applications_email_idx').on(t.email),
+  ],
+);

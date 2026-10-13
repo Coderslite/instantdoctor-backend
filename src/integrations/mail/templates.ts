@@ -887,3 +887,143 @@ export function opsDoctorApplication(input: {
   ]);
   return { subject: `[Provider application] ${input.name} – ${input.specialization}`, html, text };
 }
+
+// ─── HMO partnership applications ────────────────────────────────────────────
+
+/** Applicants give their full name; greet them by the first part of it. */
+const firstWord = (name: string) => name.trim().split(/\s+/)[0];
+
+export function hmoApplicationReceived(input: { name: string; organisation: string; reference: string }): RenderedMail {
+  const html = layout({
+    preheader: 'We have your HMO partnership application and will be in touch.',
+    body: [
+      heading('We received your application'),
+      paragraph(escapeHtml(greeting(firstWord(input.name)))),
+      paragraph(
+        `Thank you for applying to partner with ${escapeHtml(BRAND.name)} on behalf of <strong>${escapeHtml(input.organisation)}</strong>. Our partnerships team will review your application and get in touch to agree plans and tariffs.`,
+      ),
+      detailsTable([
+        ['Application reference', input.reference],
+        ['Status', 'Under review'],
+      ]),
+      muted('Once your HMO is registered, we will email your sign-in details for the HMO partner portal.'),
+    ].join(''),
+  });
+  const text = plainText([
+    greeting(firstWord(input.name)),
+    '',
+    `Thank you for applying to partner with ${BRAND.name} on behalf of ${input.organisation}. Our partnerships team will review your application and get in touch to agree plans and tariffs.`,
+    '',
+    `Application reference: ${input.reference}`,
+    '',
+    'Once your HMO is registered, we will email your sign-in details for the HMO partner portal.',
+  ]);
+  return { subject: `We received your ${BRAND.name} HMO partnership application`, html, text };
+}
+
+export function hmoApplicationApproved(input: {
+  name: string;
+  organisation: string;
+  email: string;
+  password: string;
+  portalUrl: string;
+}): RenderedMail {
+  const portal = input.portalUrl.replace(/\/$/, '');
+  const steps: Array<[string, string]> = [
+    [
+      'Sign in to the HMO portal',
+      `Go to <a href="${escapeHtml(portal)}" style="color:${BRAND.deep};font-weight:600;">${escapeHtml(portal.replace(/^https?:\/\//, ''))}</a> and sign in with the details below.`,
+    ],
+    ['Choose your own password', 'You will be asked to replace the temporary password the first time you sign in.'],
+    ['Add your members', 'Add your enrollees one by one or import them in bulk, and invite colleagues to your team.'],
+  ];
+  const html = layout({
+    preheader: `${input.organisation} is now an ${BRAND.name} partner. Here are your portal sign-in details.`,
+    body: [
+      heading(`Welcome to ${BRAND.name}, ${input.organisation}`),
+      paragraph(escapeHtml(greeting(firstWord(input.name)))),
+      paragraph(
+        'Good news: your HMO partnership application has been <strong>approved</strong> and your HMO partner portal account is ready.',
+      ),
+      detailsTable([
+        ['Portal', portal.replace(/^https?:\/\//, '')],
+        ['Email', input.email],
+        ['Temporary password', input.password],
+      ]),
+      numberedSteps(steps),
+      button('Sign in to the HMO portal', portal),
+      notice('Keep this email private. The temporary password stops working once you choose your own.'),
+      muted('Questions about your agreement? Reply to this email and our partnerships team will help.'),
+    ].join(''),
+  });
+  const text = plainText([
+    greeting(firstWord(input.name)),
+    '',
+    `Your HMO partnership application for ${input.organisation} has been approved and your HMO partner portal account is ready.`,
+    '',
+    `Portal: ${portal}`,
+    `Email: ${input.email}`,
+    `Temporary password: ${input.password}`,
+    '',
+    'You will be asked to choose your own password the first time you sign in. Then add your members and invite your team.',
+  ]);
+  return { subject: `Your ${BRAND.name} HMO portal is ready`, html, text };
+}
+
+export function hmoApplicationRejected(input: { name: string; organisation: string; reason?: string | null }): RenderedMail {
+  const html = layout({
+    preheader: 'An update on your Instant Doctor HMO partnership application.',
+    body: [
+      heading('An update on your application'),
+      paragraph(escapeHtml(greeting(firstWord(input.name)))),
+      paragraph(
+        `Thank you for your interest in partnering with ${escapeHtml(BRAND.name)}. After reviewing the application for <strong>${escapeHtml(input.organisation)}</strong>, we are unable to approve it at this time.`,
+      ),
+      input.reason ? notice(`<strong>Reviewer note:</strong> ${escapeHtml(input.reason)}`) : '',
+      muted('If your circumstances change, reply to this email or apply again on our website.'),
+    ].join(''),
+  });
+  const text = plainText([
+    greeting(firstWord(input.name)),
+    '',
+    `Thank you for your interest in partnering with ${BRAND.name}. After reviewing the application for ${input.organisation}, we are unable to approve it at this time.`,
+    input.reason ? `\nReviewer note: ${input.reason}` : null,
+    '',
+    'If your circumstances change, reply to this email or apply again on our website.',
+  ]);
+  return { subject: `Your ${BRAND.name} HMO partnership application`, html, text };
+}
+
+export function opsHmoApplication(input: {
+  id: string;
+  organisation: string;
+  contactName: string;
+  email: string;
+  phone: string | null;
+  enrollees: string | null;
+  services: string[];
+  at: Date;
+}): RenderedMail {
+  const rows: Array<[string, string]> = [
+    ['HMO', input.organisation],
+    ['Contact', input.contactName],
+    ['Email', input.email],
+    ['Phone', input.phone ?? '—'],
+    ['Enrollees', input.enrollees ?? '—'],
+    ['Services', input.services.length ? input.services.join(', ') : '—'],
+    ['Submitted', formatTime(input.at)],
+  ];
+  const link = `${env.ADMIN_URL.replace(/\/$/, '')}/hmos/applications/${input.id}`;
+  const html = layout({
+    preheader: `${input.organisation} applied to partner with Instant Doctor`,
+    body: [
+      heading('New HMO partnership application'),
+      paragraph('An HMO has applied to partner with Instant Doctor and is waiting for review.'),
+      detailsTable(rows),
+      button('Review application', link),
+    ].join(''),
+    footerNote: 'Internal notification for the Instant Doctor operations team.',
+  });
+  const text = plainText(['New HMO partnership application', ...rows.map(([label, value]) => `${label}: ${value}`), '', `Review: ${link}`]);
+  return { subject: `[HMO application] ${input.organisation}`, html, text };
+}
