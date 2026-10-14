@@ -576,7 +576,9 @@ export const pharmacyApplications = mysqlTable(
     licenceNumber: varchar('licence_number', { length: 80 }),
     /** Rough band chosen on the form, e.g. "2 – 5". */
     branches: varchar('branches', { length: 40 }),
-    offersDelivery: boolean('offers_delivery').notNull().default(false),
+    /** Picked from the address search on the form (Photon / OpenStreetMap). */
+    latitude: coordinate('latitude'),
+    longitude: coordinate('longitude'),
     message: text('message'),
     status: mysqlEnum('status', PHARMACY_APPLICATION_STATUSES).notNull().default('pending'),
     reviewNote: text('review_note'),

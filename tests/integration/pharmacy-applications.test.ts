@@ -20,7 +20,8 @@ const application = (overrides: Record<string, unknown> = {}) => ({
   state: 'Lagos',
   licenceNumber: 'PCN/PR/2026/1234',
   branches: '2 – 5',
-  offersDelivery: true,
+  latitude: 6.4474,
+  longitude: 3.4728,
   message: 'We can deliver across Lekki and VI.',
   ...overrides,
 });
@@ -78,7 +79,7 @@ describe('pharmacy partnership applications', () => {
 
     const queue = await admin.get('/pharmacy-applications?status=pending');
     expect(queue.body).toMatchObject({ total: 1, pendingCount: 1 });
-    expect(queue.body.items[0]).toMatchObject({ pharmacyName: 'HealthPlus Pharmacy Lekki', licenceNumber: 'PCN/PR/2026/1234', offersDelivery: true });
+    expect(queue.body.items[0]).toMatchObject({ pharmacyName: 'HealthPlus Pharmacy Lekki', licenceNumber: 'PCN/PR/2026/1234', latitude: 6.4474, longitude: 3.4728 });
 
     outbox = [];
     const approved = await admin.post(`/pharmacy-applications/${res.body.id}/approve`, approval());

@@ -22,9 +22,11 @@ export const applicationSchema = z.object({
   state: optional(120),
   licenceNumber: optional(80),
   branches: optional(40),
-  offersDelivery: z.boolean().default(false),
+  /** From the address picker; both or neither. */
+  latitude: z.number().min(-90).max(90).nullish(),
+  longitude: z.number().min(-180).max(180).nullish(),
   message: optional(5000),
-});
+}).transform((v) => (v.latitude == null || v.longitude == null ? { ...v, latitude: null, longitude: null } : v));
 
 export const applicationsQuery = z.object({
   status: z.enum(PHARMACY_APPLICATION_STATUSES).optional(),
