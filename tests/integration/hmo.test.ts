@@ -400,7 +400,7 @@ describe('Rosters, claims and invoices', () => {
     expect(invoice.body).toMatchObject({
       reference: expect.stringMatching(/^INV\/AVON\/\d{4}\/\d{2}\/0001$/),
       claimCount: 1,
-      totalAmount: 5_000,
+      totalAmount: 4_500, // ₦5,000 tariff less the ₦500 co-pay
       status: 'issued',
     });
 
@@ -421,7 +421,7 @@ describe('Rosters, claims and invoices', () => {
     });
 
     const claims = await admin.get(`/api/v1/admin/hmos/${hmoId}/claims`);
-    expect(claims.body.totals.paid).toMatchObject({ claims: 1, amount: 5_000 });
+    expect(claims.body.totals.paid).toMatchObject({ claims: 1, amount: 4_500 });
   });
 
   it('keeps agreements in the admins’ hands', async () => {

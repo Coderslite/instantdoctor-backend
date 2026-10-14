@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import {
   HMO_ACTIVITY_ACTORS,
+  HMO_BILLING,
+  HMO_PAYMENT_MODELS,
   HMO_APPLICATION_STATUSES,
   HMO_CLAIM_STATUSES,
   HMO_COVERAGE_TYPES,
@@ -67,14 +69,31 @@ export const hmoSchema = z.object({
 });
 export const updateHmoSchema = hmoSchema.partial();
 
-export const planSchema = z.object({
+const planFields = z.object({
   name: text(120).min(1),
   isActive: z.boolean().default(true),
   validFrom: startDate,
   validTo: endDate,
+  /** fee_for_service, or capitation: a monthly amount per enrollee as well. */
+  paymentModel: z.enum(HMO_PAYMENT_MODELS).default('fee_for_service'),
+  /** Naira per enrollee per month; required for capitation. */
+  capitationRate: amount.min(1).nullish(),
   notes: optional(5000),
 });
-export const updatePlanSchema = planSchema.partial();
+const checkPlan = (plan: Partial<z.infer<typeof planFields>>, ctx: z.RefinementCtx) => {
+  if (plan.paymentModel === 'capitation' && plan.capitationRate == null)
+    ctx.addIssue({
+      code: 'custom',
+      path: ['capitationRate'],
+      message: 'Enter the capitation rate per member per month',
+    });
+};
+export const planSchema = planFields.superRefine(checkPlan);
+export const updatePlanSchema = planFields
+  .partial()
+  // Partial updates must not pick up defaults.
+  // (the merged plan is checked in the service).
+  .extend({ isActive: z.boolean().optional(), paymentModel: z.enum(HMO_PAYMENT_MODELS).optional() });
 
 const ruleFields = z.object({
   service: z.enum(HMO_SERVICES),
@@ -86,10 +105,14 @@ const ruleFields = z.object({
   hmoAmount: amount.nullish(),
   doctorEarning: amount.nullish(),
   limitCount: z.number().int().min(1).max(10_000).nullish(),
-  /** Medicines: the most the HMO pays per period, in naira. */
+  /** The most the HMO pays per period for this service, in naira. */
   limitAmount: amount.nullish(),
+  /** Pre-authorisation: the HMO must approve uses whose cost to it is above this (0 = always). */
+  authorizationAbove: amount.nullish(),
   limitPeriod: z.enum(HMO_LIMIT_PERIODS).nullish(),
   overLimit: z.enum(HMO_OVER_LIMIT).default('standard_price'),
+  /** capitation: paid by the plan's monthly capitation, nothing billed per use. */
+  billing: z.enum(HMO_BILLING).default('per_use'),
   isActive: z.boolean().default(true),
 });
 
@@ -134,14 +157,34 @@ function checkRule(rule: z.infer<typeof ruleFields>, ctx: z.RefinementCtx) {
         path: ['hmoAmount'],
         message: 'The HMO is billed for the medicines actually dispensed',
       });
-  } else if (rule.limitAmount != null) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['limitAmount'],
-      message: 'An amount limit applies to medicines only',
-    });
+  }
+  if (rule.billing === 'capitation') {
+    // Pharmacies are paid per order, so medicines are always billed per use.
+    if (rule.service === 'medicines')
+      ctx.addIssue({ code: 'custom', path: ['billing'], message: 'Medicines are always billed per use' });
+    if (!CAPITATION_COVERAGE.includes(rule.coverage))
+      ctx.addIssue({
+        code: 'custom',
+        path: ['coverage'],
+        message: 'Capitation covers a service fully or with a co-pay',
+      });
+    if (rule.hmoAmount != null)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['hmoAmount'],
+        message: 'Capitated services have no per-use tariff',
+      });
+    // Nothing is paid per visit, so the doctor's fee must be set explicitly.
+    if (rule.service === 'consultation' && rule.doctorEarning == null)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['doctorEarning'],
+        message: 'Enter what the doctor earns per capitated consultation',
+      });
   }
 }
+
+export const CAPITATION_COVERAGE: readonly string[] = ['full', 'copay_fixed', 'copay_percent'];
 
 export const MEDICINE_COVERAGE: readonly string[] = ['full', 'copay_fixed', 'copay_percent', 'not_covered'];
 
@@ -149,6 +192,36 @@ export const ruleSchema = ruleFields.superRefine(checkRule);
 export type RuleInput = z.infer<typeof ruleSchema>;
 
 export const pricePreviewQuery = z.object({ planId: z.string().max(36) });
+
+export const authorizationRequestSchema = z.object({
+  service: z.enum(HMO_SERVICES),
+  /** Consultations: the package. */
+  packageId: z.string().max(36).nullish(),
+  /** Medicines: the normal cost of the prescribed medicines. */
+  amount: amount.nullish(),
+  note: optional(1000),
+});
+export const authorizationDecisionSchema = z.discriminatedUnion('action', [
+  z.object({
+    action: z.literal('approve'),
+    /** How long the approval can be used, in days. */
+    validDays: z.number().int().min(1).max(90).optional(),
+    /** The HMO's own reference from its system. */
+    hmoReference: text(80).nullish(),
+    note: text(500).nullish(),
+  }),
+  z.object({ action: z.literal('reject'), note: text(500).min(3) }),
+]);
+export const authorizationsQuery = z.object({
+  status: z.enum(['pending', 'approved', 'rejected', 'cancelled', 'used', 'expired']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+export const capitationQuery = z.object({
+  months: z.coerce.number().int().min(1).max(36).default(12),
+});
+export const capitationMonth = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Use YYYY-MM');
 
 // ── Enrollees ───────────────────────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 import type { Server as HttpServer } from 'node:http';
-import { and, eq, or } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 import { Server, type Socket } from 'socket.io';
 import { corsOrigin } from '../config/env.js';
 import { db } from '../db/client.js';
@@ -107,6 +107,8 @@ async function onConnection(socket: Socket) {
       if (!call || !call.participants.has(userId)) return;
       const recipient = [...call.participants].find((id) => id !== userId);
       if (recipient) io?.to(userRoom(recipient)).emit(event, { ...data, fromUserId: userId });
+      // An answered call means both sides were there: evidence the consultation took place.
+      if (event === 'call:answer') void recordCallAnswered(call.appointmentId);
       if (event === 'call:end' || event === 'call:decline') activeCalls.delete(callId);
     });
   }
@@ -148,6 +150,21 @@ async function isParticipant(appointmentId: string, userId: string) {
     )
     .limit(1);
   return Boolean(row);
+}
+
+async function recordCallAnswered(appointmentId: string) {
+  const now = new Date();
+  try {
+    await db
+      .update(appointments)
+      .set({
+        doctorJoinedAt: sql`COALESCE(${appointments.doctorJoinedAt}, ${now})`,
+        patientJoinedAt: sql`COALESCE(${appointments.patientJoinedAt}, ${now})`,
+      })
+      .where(eq(appointments.id, appointmentId));
+  } catch (err) {
+    logger.error({ err, appointmentId }, 'Could not record call join');
+  }
 }
 
 async function setPresence(userId: string, presence: 'online' | 'offline') {

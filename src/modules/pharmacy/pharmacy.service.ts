@@ -208,7 +208,15 @@ export async function priceCart(input: z.infer<typeof cartSchema>, userId?: stri
       prescriptionId: lines.find((l) => l.prescriptionId)?.prescriptionId ?? null,
       hmoAmount,
       hmo,
-      hmoNotice: check && !hmo ? { hmoName: check.membership?.hmo.name ?? null, notice: check.notice } : null,
+      hmoNotice:
+        check && !hmo
+          ? {
+              hmoName: check.membership?.hmo.name ?? null,
+              notice: check.notice,
+              message: check.message ?? null,
+              authorization: check.authorization ?? null,
+            }
+          : null,
     });
   }
 
@@ -239,9 +247,17 @@ const hmoQuote = (o: Awaited<ReturnType<typeof priceCart>>['orders'][number]) =>
         hmoAmount: o.hmoAmount,
         patientAmount: o.hmo.patientAmount,
         allowance: o.hmo.allowance,
+        authorizationCode: o.hmo.authorization?.code ?? null,
       }
     : o.hmoNotice
-      ? { covered: false, hmoName: o.hmoNotice.hmoName, notice: o.hmoNotice.notice, prescribedAmount: o.prescribedAmount }
+      ? {
+          covered: false,
+          hmoName: o.hmoNotice.hmoName,
+          notice: o.hmoNotice.notice,
+          message: o.hmoNotice.message,
+          authorization: o.hmoNotice.authorization,
+          prescribedAmount: o.prescribedAmount,
+        }
       : null;
 
 export async function quoteCart(input: z.infer<typeof cartSchema>, userId?: string) {

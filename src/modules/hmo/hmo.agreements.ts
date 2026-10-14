@@ -7,6 +7,7 @@ import {
   hmoPlanRules,
   hmoPlans,
   hmos,
+  type HmoBilling,
   type HmoService,
 } from '../../db/schema/index.js';
 import { isDuplicateKeyError } from '../../lib/db-errors.js';
@@ -195,12 +196,17 @@ export async function createPlan(hmoId: string, input: z.infer<typeof planSchema
   await requireHmo(hmoId);
   checkWindow(input.validFrom, input.validTo);
   const id = newId();
-  await db.insert(hmoPlans).values({ id, hmoId, ...input });
+  await db.insert(hmoPlans).values({
+    id,
+    hmoId,
+    ...input,
+    capitationRate: input.paymentModel === 'capitation' ? (input.capitationRate ?? null) : null,
+  });
   await recordActivity(hmoId, actor, {
     action: 'plan.created',
     entityType: 'plan',
     entityId: id,
-    summary: `Created plan ${input.name}`,
+    summary: `Created plan ${input.name}${input.paymentModel === 'capitation' ? ` (capitation ${ngn(input.capitationRate)} per member per month)` : ''}`,
   });
   return getHmo(hmoId);
 }
@@ -210,8 +216,12 @@ const PLAN_LABELS = {
   isActive: 'active',
   validFrom: 'start date',
   validTo: 'end date',
+  paymentModel: 'payment model',
+  capitationRate: 'capitation rate',
   notes: 'notes',
 };
+
+const ngn = (n: number | null | undefined) => `₦${Number(n ?? 0).toLocaleString('en-NG')}`;
 
 export async function updatePlan(
   hmoId: string,
@@ -221,13 +231,42 @@ export async function updatePlan(
 ) {
   const plan = await requirePlan(hmoId, planId);
   checkWindow(input.validFrom ?? plan.validFrom, input.validTo ?? plan.validTo);
-  if (Object.keys(input).length)
-    await db.update(hmoPlans).set(input).where(eq(hmoPlans.id, planId));
+  const model = input.paymentModel ?? plan.paymentModel;
+  const changes = { ...input };
+  if (model === 'capitation') {
+    if ((input.capitationRate ?? plan.capitationRate) == null)
+      throw badRequest('Enter the capitation rate per member per month', [
+        { path: 'capitationRate', message: 'required' },
+      ]);
+  } else {
+    changes.capitationRate = null;
+    if (plan.paymentModel === 'capitation') {
+      const [capitated] = await db
+        .select({ n: count() })
+        .from(hmoPlanRules)
+        .where(
+          and(
+            eq(hmoPlanRules.planId, planId),
+            eq(hmoPlanRules.billing, 'capitation'),
+            eq(hmoPlanRules.isActive, true),
+          ),
+        );
+      if ((capitated?.n ?? 0) > 0)
+        throw conflict(
+          'HMO_PLAN_HAS_CAPITATED_BENEFITS',
+          'Switch this plan’s capitated benefits to per-use billing first.',
+        );
+    }
+  }
+  if (Object.keys(changes).length)
+    await db.update(hmoPlans).set(changes).where(eq(hmoPlans.id, planId));
   const diff = changedFields(plan, await requirePlan(hmoId, planId), [
     'name',
     'isActive',
     'validFrom',
     'validTo',
+    'paymentModel',
+    'capitationRate',
     'notes',
   ]);
   if (Object.keys(diff).length) {
@@ -284,14 +323,24 @@ const ruleValues = (rule: RuleInput) => ({
   hmoAmount: rule.hmoAmount ?? null,
   doctorEarning: rule.doctorEarning ?? null,
   limitCount: rule.limitCount ?? null,
-  limitAmount: rule.service === 'medicines' ? (rule.limitAmount ?? null) : null,
+  limitAmount: rule.limitAmount ?? null,
+  authorizationAbove: rule.authorizationAbove ?? null,
   limitPeriod: rule.limitCount || rule.limitAmount ? (rule.limitPeriod ?? null) : null,
   overLimit: rule.overLimit,
+  billing: rule.billing,
   isActive: rule.isActive,
 });
 
+/** Capitated benefits only make sense on a plan the HMO pays capitation for. */
+function checkBilling(plan: { paymentModel: string; name: string }, rule: RuleInput) {
+  if (rule.billing === 'capitation' && plan.paymentModel !== 'capitation')
+    throw badRequest(`${plan.name} isn’t a capitation plan. Set its payment model to capitation first.`, [
+      { path: 'billing', message: 'plan is fee-for-service' },
+    ]);
+}
+
 /** "GP consultation — You pay ₦1,000 (HMO tariff ₦6,000, 4 per month)". */
-async function describeBenefit(rule: Omit<RuleInput, 'overLimit' | 'isActive'>) {
+async function describeBenefit(rule: Omit<RuleInput, 'overLimit' | 'isActive' | 'billing'> & { billing?: HmoBilling }) {
   const [pkg] = rule.packageId
     ? await db
         .select({ name: appointmentPackages.name })
@@ -299,10 +348,16 @@ async function describeBenefit(rule: Omit<RuleInput, 'overLimit' | 'isActive'>) 
         .where(eq(appointmentPackages.id, rule.packageId))
     : [];
   const terms = [
+    rule.billing === 'capitation' ? 'paid by capitation' : null,
     rule.hmoAmount != null ? `HMO tariff ₦${Number(rule.hmoAmount).toLocaleString('en-NG')}` : null,
     rule.limitCount ? `${rule.limitCount} per ${rule.limitPeriod}` : null,
     rule.limitAmount != null
       ? `₦${Number(rule.limitAmount).toLocaleString('en-NG')} per ${rule.limitPeriod}`
+      : null,
+    rule.authorizationAbove != null
+      ? rule.authorizationAbove === 0
+        ? 'needs HMO approval'
+        : `needs HMO approval above ₦${Number(rule.authorizationAbove).toLocaleString('en-NG')}`
       : null,
   ].filter(Boolean);
   const label = benefitLabel(rule.service, pkg?.name ?? null);
@@ -311,6 +366,7 @@ async function describeBenefit(rule: Omit<RuleInput, 'overLimit' | 'isActive'>) 
 
 export async function createRule(hmoId: string, planId: string, rule: RuleInput, actor: Actor) {
   const plan = await requirePlan(hmoId, planId);
+  checkBilling(plan, rule);
   await checkRuleTarget(planId, rule);
   const id = newId();
   await db.insert(hmoPlanRules).values({ id, planId, ...ruleValues(rule) });
@@ -337,6 +393,7 @@ export async function updateRule(
     .from(hmoPlanRules)
     .where(and(eq(hmoPlanRules.id, ruleId), eq(hmoPlanRules.planId, planId)));
   if (!existing) throw notFound('Rule');
+  checkBilling(plan, rule);
   await checkRuleTarget(planId, rule, ruleId);
   await db.update(hmoPlanRules).set(ruleValues(rule)).where(eq(hmoPlanRules.id, ruleId));
   const [was, now] = [await describeBenefit(existing), await describeBenefit(rule)];
@@ -421,7 +478,9 @@ export async function pricePreview(hmoId: string, planId: string) {
       label,
       standardAmount: standard,
       covered: Boolean(amounts),
-      summary: rule ? describeRule(rule) : 'No rule — normal price',
+      summary: rule
+        ? `${describeRule(rule)}${rule.billing === 'capitation' ? ' · paid by capitation' : ''}`
+        : 'No rule — normal price',
       patientAmount: amounts?.patientAmount ?? standard,
       hmoAmount: amounts?.hmoAmount ?? 0,
       doctorEarning: withDoctorShare ? (amounts?.doctorEarning ?? null) : null,
@@ -430,6 +489,11 @@ export async function pricePreview(hmoId: string, planId: string) {
           rule?.limitCount ? `${rule.limitCount} per ${rule.limitPeriod}` : null,
           rule?.limitAmount
             ? `₦${Number(rule.limitAmount).toLocaleString('en-NG')} per ${rule.limitPeriod}`
+            : null,
+          rule?.authorizationAbove != null
+            ? rule.authorizationAbove === 0
+              ? 'needs HMO approval'
+              : `needs approval above ₦${Number(rule.authorizationAbove).toLocaleString('en-NG')}`
             : null,
         ]
           .filter(Boolean)

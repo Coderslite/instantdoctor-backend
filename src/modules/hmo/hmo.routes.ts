@@ -11,6 +11,8 @@ import {
 import * as activity from './hmo.activity.js';
 import * as agreements from './hmo.agreements.js';
 import * as applications from './hmo.applications.js';
+import * as authorizations from './hmo.authorizations.js';
+import * as capitation from './hmo.capitation.js';
 import * as claims from './hmo.claims.js';
 import * as enrollees from './hmo.enrollees.js';
 import * as member from './hmo.member.js';
@@ -43,6 +45,23 @@ hmoMemberRouter.post('/link', linkLimiter, async (req, res) => {
   );
   res.status(result.status === 'linked' ? 200 : 202).json(result);
 });
+// Pre-authorisation: ask the HMO to approve a service above the agreed amount.
+hmoMemberRouter.get('/authorizations', async (req, res) =>
+  res.json({ items: await authorizations.myAuthorizations(currentUser(req).userId) }),
+);
+hmoMemberRouter.post('/authorizations', async (req, res) =>
+  res
+    .status(201)
+    .json(
+      await authorizations.requestAuthorization(
+        currentUser(req).userId,
+        parse(schemas.authorizationRequestSchema, req.body),
+      ),
+    ),
+);
+hmoMemberRouter.post('/authorizations/:id/cancel', async (req, res) =>
+  res.json(await authorizations.cancelMine(currentUser(req).userId, String(req.params.id))),
+);
 hmoMemberRouter.delete('/me', async (req, res) =>
   res.json(await member.unlinkMembership(currentUser(req).userId)),
 );
@@ -206,6 +225,37 @@ adminHmoRouter.patch('/:hmoId/invoices/:invoiceId', canManage, async (req, res) 
     ),
   ),
 );
+
+// Approvals: decide on members' pre-authorisation requests on the HMO's behalf.
+adminHmoRouter.get('/:hmoId/authorizations', async (req, res) =>
+  res.json(await authorizations.listAuthorizations(hmoId(req), parse(schemas.authorizationsQuery, req.query))),
+);
+adminHmoRouter.post('/:hmoId/authorizations/:id/decision', canManage, async (req, res) =>
+  res.json(
+    await authorizations.decideAuthorization(
+      hmoId(req),
+      String(req.params.id),
+      parse(schemas.authorizationDecisionSchema, req.body),
+      await actor(req),
+    ),
+  ),
+);
+
+// Capitation: what each capitation plan earns against what its members use, and who was counted.
+adminHmoRouter.get('/:hmoId/capitation', async (req, res) =>
+  res.json(await capitation.utilisation(hmoId(req), parse(schemas.capitationQuery, req.query).months)),
+);
+adminHmoRouter.get('/:hmoId/plans/:planId/capitation/:month/members', async (req, res) => {
+  const planId = String(req.params.planId);
+  await capitation.requireCapitationPlan(hmoId(req), planId);
+  res.json({
+    items: await capitation.capitationMembers(
+      hmoId(req),
+      planId,
+      parse(schemas.capitationMonth, req.params.month),
+    ),
+  });
+});
 
 // HMO portal accounts. The first one is created here; the HMO's admins then manage their team.
 adminHmoRouter.get('/:hmoId/users', async (req, res) =>

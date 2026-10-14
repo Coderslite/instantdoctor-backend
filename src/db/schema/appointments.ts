@@ -128,6 +128,20 @@ export const appointments = mysqlTable(
     /** Client `Idempotency-Key` that created this row; guarantees one booking per key. */
     idempotencyKey: varchar('idempotency_key', { length: 128 }),
 
+    /** When the consultation was completed, and by whom: doctor | auto | admin. */
+    completedAt: timestamp('completed_at'),
+    completedBy: varchar('completed_by', { length: 16 }),
+    /** First time each side joined the call: evidence the consultation happened. */
+    doctorJoinedAt: timestamp('doctor_joined_at'),
+    patientJoinedAt: timestamp('patient_joined_at'),
+    /** The doctor was reminded to complete it after its end time. */
+    completionRemindedAt: timestamp('completion_reminded_at'),
+    /** Set when it can't be closed automatically; an admin decides. Reason: no_activity | not_accepted. */
+    needsReviewAt: timestamp('needs_review_at'),
+    reviewReason: varchar('review_reason', { length: 32 }),
+    refundedAt: timestamp('refunded_at'),
+    refundedAmount: money('refunded_amount'),
+
     reminderCount: int('reminder_count').notNull().default(0),
     reminderCountToday: int('reminder_count_today').notNull().default(0),
     lastReminderSentAt: timestamp('last_reminder_sent_at'),
@@ -141,6 +155,8 @@ export const appointments = mysqlTable(
     index('appointments_user_updated_idx').on(t.userId, t.updatedAt),
     index('appointments_user_paid_idx').on(t.userId, t.isPaid),
     index('appointments_open_idx').on(t.status, t.doctorId, t.startTime),
+    index('appointments_lifecycle_idx').on(t.status, t.endTime),
+    index('appointments_review_idx').on(t.needsReviewAt),
   ],
 );
 

@@ -2,10 +2,14 @@ import { and, desc, eq, gt, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm
 import { alias } from 'drizzle-orm/mysql-core';
 import { env } from '../../config/env.js';
 import { db, type Tx } from '../../db/client.js';
+import { settleAppointment } from '../doctor-payouts/doctor-payouts.ledger.js';
 import {
   appointmentPackages,
   appointments,
   doctorProfiles,
+  hmoClaims,
+  hmoPlans,
+  hmos,
   users,
   type AppointmentStatus,
   type AppointmentPackageFeatures,
@@ -32,6 +36,7 @@ import {
   coverageFor,
   membershipFor,
   recordClaim,
+  type CoverageCheck,
   type CoverageDecision,
 } from '../hmo/hmo.coverage.js';
 import { NIGERIA } from '../hmo/hmo.pricing.js';
@@ -54,13 +59,24 @@ type AppointmentRow = typeof appointments.$inferSelect;
 // ─── Packages & quotes ───────────────────────────────────────────────────────
 
 type HmoListing =
-  | { covered: false; hmoName: string; notice: 'not_covered' | 'limit_reached' | null }
+  | {
+      covered: false;
+      hmoName: string;
+      notice: CoverageCheck['notice'];
+      /** The notice in plain words, so the app can show any notice. */
+      message: string | null;
+      /** Set when the HMO must approve it first: what to request, or the request waiting. */
+      authorization: CoverageCheck['authorization'];
+    }
   | {
       covered: true;
       hmoName: string;
       summary: string;
       standardPrice: number;
       usage: CoverageDecision['usage'];
+      allowance: CoverageDecision['allowance'];
+      /** The HMO's PA code this booking will use. */
+      authorizationCode: string | null;
     };
 
 /** Active packages priced for the caller's region (or their HMO agreement). */
@@ -95,11 +111,24 @@ export async function listPackagesForUser(userId: string) {
       if (!membership) return listing;
       // HMO members see what their agreement charges them; `price` carries it so older apps show it too.
       const ng = await quoteFromUsd(p.amountUsd, NIGERIA);
-      const { decision, notice } = await coverageFor(userId, 'consultation', p.id, ng.amount, {
-        membership,
-      });
+      const { decision, notice, message, authorization } = await coverageFor(
+        userId,
+        'consultation',
+        p.id,
+        ng.amount,
+        { membership },
+      );
       if (!decision)
-        return { ...listing, hmo: { covered: false, hmoName: membership.hmo.name, notice } };
+        return {
+          ...listing,
+          hmo: {
+            covered: false,
+            hmoName: membership.hmo.name,
+            notice,
+            message: message ?? null,
+            authorization: authorization ?? null,
+          },
+        };
       return {
         ...listing,
         price: {
@@ -113,6 +142,8 @@ export async function listPackagesForUser(userId: string) {
           summary: decision.summary,
           standardPrice: decision.standardAmount,
           usage: decision.usage,
+          allowance: decision.allowance,
+          authorizationCode: decision.authorization?.code ?? null,
         },
       };
     }),
@@ -480,7 +511,7 @@ type Summary = Parameters<typeof serializeUserSummary>[0];
 type JoinedRow = Awaited<ReturnType<typeof baseQuery>>[number];
 
 function serializeAppointment(
-  { appointment: a, doctor, patient }: JoinedRow,
+  { appointment: a, doctor, patient, hmo }: JoinedRow,
   includeDoctorEarning = false,
 ) {
   return {
@@ -511,6 +542,17 @@ function serializeAppointment(
           doctorEarningConvertedAt: a.doctorEarningConvertedAt,
         }
       : {}),
+    /** Set when the patient's HMO covers this consultation: for the doctor's records and HMO paperwork. */
+    hmo:
+      a.hmoClaimId && hmo?.name
+        ? {
+            name: hmo.name,
+            planName: hmo.planName,
+            enrolleeCode: hmo.enrolleeCode,
+            authorizationCode: hmo.authorizationCode,
+            billing: hmo.billing,
+          }
+        : null,
     /** Null while the request is waiting for a doctor to accept it. */
     doctor: doctor?.id ? serializeUserSummary(doctor as Summary) : null,
     patient: serializeUserSummary(patient as Summary), // inner join: always present
@@ -527,10 +569,20 @@ function baseQuery() {
       appointment: appointments,
       doctor: summaryOf(doctorUser),
       patient: summaryOf(patientUser),
+      hmo: {
+        name: hmos.name,
+        planName: hmoPlans.name,
+        enrolleeCode: hmoClaims.enrolleeCode,
+        authorizationCode: hmoClaims.authorizationCode,
+        billing: hmoClaims.billing,
+      },
     })
     .from(appointments)
     .leftJoin(doctorUser, eq(doctorUser.id, appointments.doctorId))
-    .innerJoin(patientUser, eq(patientUser.id, appointments.userId));
+    .innerJoin(patientUser, eq(patientUser.id, appointments.userId))
+    .leftJoin(hmoClaims, eq(hmoClaims.id, appointments.hmoClaimId))
+    .leftJoin(hmos, eq(hmos.id, hmoClaims.hmoId))
+    .leftJoin(hmoPlans, eq(hmoPlans.id, hmoClaims.planId));
 }
 
 const participantFilter = (viewer: { userId: string; role: UserRole }) =>
@@ -687,10 +739,17 @@ export async function transitionByDoctor(
   }
   const result = await db
     .update(appointments)
-    .set({ status: next })
+    .set({
+      status: next,
+      ...(next === 'completed'
+        ? { completedAt: new Date(), completedBy: 'doctor', needsReviewAt: null, reviewReason: null }
+        : {}),
+    })
     .where(and(eq(appointments.id, appointmentId), eq(appointments.status, row.status)));
   if (affectedRows(result) === 0)
     throw conflict('CONCURRENT_UPDATE', 'Appointment changed; reload and retry');
+  // Completing credits the doctor's earnings; cancelling takes back anything credited.
+  await db.transaction((tx) => settleAppointment(tx, appointmentId));
   realtime.toUser(row.userId, 'appointment:updated', {
     id: row.id,
     status: next,

@@ -21,6 +21,7 @@ import { emailAppointmentUpdate } from '../appointments/appointment-emails.js';
 import { sendPush, type PushMessage } from '../../integrations/push.js';
 import { notFound } from '../../lib/errors.js';
 import { round2 } from '../../lib/money.js';
+import { settleAppointment } from '../doctor-payouts/doctor-payouts.ledger.js';
 import { realtime } from '../../realtime/gateway.js';
 import { doctorPushTokens } from '../doctors/doctors.service.js';
 import { activateFamilySubscription } from '../subscriptions/subscriptions.service.js';
@@ -134,6 +135,8 @@ export async function confirmAppointment(
     })
     .where(eq(appointments.id, appointmentId));
   await tx.update(users).set({ hasPaid: true }).where(eq(users.id, appointment.userId));
+  // Paid after the doctor already completed it (rare): credit their earning now.
+  if (appointment.status === 'completed') await settleAppointment(tx, appointmentId);
 
   const effects: Effect[] = [];
 

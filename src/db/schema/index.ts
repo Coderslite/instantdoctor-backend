@@ -11,3 +11,4 @@ export * from './family.js';
 export * from './applications.js';
 export * from './mail.js';
 export * from './hmo.js';
+export * from './doctor-payouts.js';

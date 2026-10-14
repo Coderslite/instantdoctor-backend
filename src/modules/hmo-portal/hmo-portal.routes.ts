@@ -8,7 +8,10 @@ import { authenticateHmo, currentHmo, requireHmoRoles } from '../../middleware/a
 import { refreshSchema } from '../auth/auth.schemas.js';
 import type { Actor } from '../hmo/hmo.activity.js';
 import * as activity from '../hmo/hmo.activity.js';
+import * as authorizations from '../hmo/hmo.authorizations.js';
+import * as capitation from '../hmo/hmo.capitation.js';
 import * as claims from '../hmo/hmo.claims.js';
+import * as hmoSchemas from '../hmo/hmo.schemas.js';
 import * as enrollees from '../hmo/hmo.enrollees.js';
 import * as team from '../hmo/hmo.users.js';
 import * as schemas from './hmo-portal.schemas.js';
@@ -157,6 +160,43 @@ hmoPortalRouter.get('/invoices/:invoiceId', async (req, res) =>
     service.portalInvoice(await claims.getInvoice(hmoId(req), String(req.params.invoiceId))),
   ),
 );
+
+// Approvals (pre-authorisation): members' requests for services above the agreed amount.
+hmoPortalRouter.get('/authorizations', async (req, res) =>
+  res.json(await authorizations.listAuthorizations(hmoId(req), parse(hmoSchemas.authorizationsQuery, req.query))),
+);
+hmoPortalRouter.post('/authorizations/:id/decision', canManageMembers, async (req, res) =>
+  res.json(
+    await authorizations.decideAuthorization(
+      hmoId(req),
+      String(req.params.id),
+      parse(hmoSchemas.authorizationDecisionSchema, req.body),
+      actor(req),
+    ),
+  ),
+);
+
+// Capitation: members counted and services used each month. Our doctor costs and margin stay internal.
+hmoPortalRouter.get('/capitation', async (req, res) => {
+  const { items } = await capitation.utilisation(
+    hmoId(req),
+    parse(hmoSchemas.capitationQuery, req.query).months,
+  );
+  res.json({
+    items: items.map(({ doctorCost: _cost, margin: _margin, costRatio: _ratio, ...month }) => month),
+  });
+});
+hmoPortalRouter.get('/plans/:planId/capitation/:month/members', async (req, res) => {
+  const planId = String(req.params.planId);
+  await capitation.requireCapitationPlan(hmoId(req), planId);
+  res.json({
+    items: await capitation.capitationMembers(
+      hmoId(req),
+      planId,
+      parse(hmoSchemas.capitationMonth, req.params.month),
+    ),
+  });
+});
 
 // ── Activity trail ──────────────────────────────────────────────────────────
 

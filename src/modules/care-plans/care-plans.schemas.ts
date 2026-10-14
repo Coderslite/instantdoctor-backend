@@ -17,20 +17,30 @@ export const updateCarePlanSchema = carePlanSchema
   .extend({ isActive: z.boolean() })
   .partial();
 
-export const vitalReadingSchema = z
-  .object({
-    systolic: z.number().int().min(40).max(300).nullable().default(null),
-    diastolic: z.number().int().min(20).max(200).nullable().default(null),
-    glucose: z.number().int().min(10).max(1000).nullable().default(null),
-    measuredAt: isoDateTime().default(() => new Date()),
-    note: z.string().trim().max(500).default(''),
-  })
-  .superRefine((reading, ctx) => {
-    const hasBloodPressure = reading.systolic !== null || reading.diastolic !== null;
-    if (hasBloodPressure && (reading.systolic === null || reading.diastolic === null)) {
-      ctx.addIssue({ code: 'custom', message: 'Enter both systolic and diastolic readings', path: ['systolic'] });
-    }
-    if (!hasBloodPressure && reading.glucose === null) {
-      ctx.addIssue({ code: 'custom', message: 'Enter a blood pressure or glucose reading' });
-    }
-  });
+const readingFields = z.object({
+  systolic: z.number().int().min(40).max(300).nullable().default(null),
+  diastolic: z.number().int().min(20).max(200).nullable().default(null),
+  glucose: z.number().int().min(10).max(1000).nullable().default(null),
+  note: z.string().trim().max(500).default(''),
+});
+
+type ReadingValues = Pick<z.infer<typeof readingFields>, 'systolic' | 'diastolic' | 'glucose'>;
+
+function checkReading(reading: ReadingValues, ctx: z.RefinementCtx) {
+  const hasBloodPressure = reading.systolic !== null || reading.diastolic !== null;
+  if (hasBloodPressure && (reading.systolic === null || reading.diastolic === null)) {
+    ctx.addIssue({ code: 'custom', message: 'Enter both systolic and diastolic readings', path: ['systolic'] });
+  }
+  if (!hasBloodPressure && reading.glucose === null) {
+    ctx.addIssue({ code: 'custom', message: 'Enter a blood pressure or glucose reading' });
+  }
+}
+
+export const vitalReadingSchema = readingFields
+  .extend({ measuredAt: isoDateTime().default(() => new Date()) })
+  .superRefine(checkReading);
+
+/** Replaces a reading's values; [measuredAt] is kept unless sent. */
+export const updateVitalReadingSchema = readingFields
+  .extend({ measuredAt: isoDateTime().optional() })
+  .superRefine(checkReading);

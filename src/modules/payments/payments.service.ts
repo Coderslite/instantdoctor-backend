@@ -30,6 +30,7 @@ import { feePolicySchema, getFeePolicy, orderSurcharge } from '../pricing/fees.j
 import { WALLET_CURRENCY } from '../wallet/wallet.ledger.js';
 import { familySubscriptionPrice, requireFamilySubscription } from '../subscriptions/subscriptions.service.js';
 import { handleTransferEvent } from '../payouts/payouts.service.js';
+import { handleTransferEvent as handleDoctorTransferEvent } from '../doctor-payouts/doctor-payouts.service.js';
 import { runEffects, type Effect } from './effects.js';
 import {
   confirmAppointment,
@@ -633,7 +634,8 @@ async function processWebhookEvent(providerName: PaymentProviderName, eventRowId
   try {
     // Paystack transfer events are pharmacy payouts, not customer payments.
     if (providerName === 'paystack' && eventType?.startsWith('transfer.')) {
-      await handleTransferEvent(reference);
+      // Doctor payouts first (iddp_ references), otherwise a pharmacy payout.
+      if (!(await handleDoctorTransferEvent(reference))) await handleTransferEvent(reference);
     } else if (reference) {
       const [payment] = await db
         .select()

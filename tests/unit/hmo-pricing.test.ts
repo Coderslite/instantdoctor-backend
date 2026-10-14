@@ -30,6 +30,7 @@ describe('HMO agreement pricing', () => {
     expect(
       applyRule(rule({ coverage: 'copay_fixed', patientAmount: 1_000 }), 10_000, consult),
     ).toEqual({ patientAmount: 1_000, hmoAmount: 9_000, doctorEarning: 6_000 });
+    // With a tariff, the co-pay comes out of the agreed price.
     expect(
       applyRule(
         rule({
@@ -43,9 +44,19 @@ describe('HMO agreement pricing', () => {
       ),
     ).toEqual({
       patientAmount: 1_000,
-      hmoAmount: 6_000,
+      hmoAmount: 5_000,
       doctorEarning: 3_500,
     });
+  });
+
+  it('the tariff is the agreed price: co-pays and doctor pay are worked out on it', () => {
+    // ₦13,400 normally; agreed ₦1,000; member co-pays 30% (HMO covers 70%).
+    expect(
+      applyRule(rule({ coverage: 'copay_percent', percent: 30, hmoAmount: 1_000 }), 13_400, consult),
+    ).toEqual({ patientAmount: 300, hmoAmount: 700, doctorEarning: 600 });
+    expect(describeRule(rule({ coverage: 'copay_percent', percent: 30 }))).toBe(
+      'HMO covers 70% · you pay 30%',
+    );
   });
 
   it('percentage co-pay rounds to whole naira', () => {

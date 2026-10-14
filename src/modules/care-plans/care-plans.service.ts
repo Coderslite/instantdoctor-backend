@@ -5,7 +5,12 @@ import { carePlans, vitalReadings } from '../../db/schema/index.js';
 import { notFound } from '../../lib/errors.js';
 import { newId } from '../../lib/ids.js';
 import { resolveProfileId } from '../family/family.service.js';
-import type { carePlanSchema, updateCarePlanSchema, vitalReadingSchema } from './care-plans.schemas.js';
+import type {
+  carePlanSchema,
+  updateCarePlanSchema,
+  updateVitalReadingSchema,
+  vitalReadingSchema,
+} from './care-plans.schemas.js';
 
 async function requireOwned(userId: string, id: string) {
   const [plan] = await db.select().from(carePlans).where(and(eq(carePlans.id, id), eq(carePlans.userId, userId))).limit(1);
@@ -54,8 +59,41 @@ export async function updateCarePlan(userId: string, id: string, input: z.infer<
   return getCarePlan(userId, id);
 }
 
+/** Readings go with the plan (ON DELETE CASCADE). */
+export async function deleteCarePlan(userId: string, id: string) {
+  await requireOwned(userId, id);
+  await db.delete(carePlans).where(eq(carePlans.id, id));
+}
+
 export async function addVitalReading(userId: string, id: string, input: z.infer<typeof vitalReadingSchema>) {
   await requireOwned(userId, id);
   await db.insert(vitalReadings).values({ id: newId(), carePlanId: id, ...input });
   return getCarePlan(userId, id);
+}
+
+async function requireReading(userId: string, planId: string, readingId: string) {
+  await requireOwned(userId, planId);
+  const [reading] = await db
+    .select({ id: vitalReadings.id })
+    .from(vitalReadings)
+    .where(and(eq(vitalReadings.id, readingId), eq(vitalReadings.carePlanId, planId)))
+    .limit(1);
+  if (!reading) throw notFound('Reading');
+}
+
+export async function updateVitalReading(
+  userId: string,
+  planId: string,
+  readingId: string,
+  input: z.infer<typeof updateVitalReadingSchema>,
+) {
+  await requireReading(userId, planId, readingId);
+  await db.update(vitalReadings).set(input).where(eq(vitalReadings.id, readingId));
+  return getCarePlan(userId, planId);
+}
+
+export async function deleteVitalReading(userId: string, planId: string, readingId: string) {
+  await requireReading(userId, planId, readingId);
+  await db.delete(vitalReadings).where(eq(vitalReadings.id, readingId));
+  return getCarePlan(userId, planId);
 }

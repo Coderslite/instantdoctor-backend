@@ -263,6 +263,7 @@ export async function createEnrollee(
       enrolleeCode: code,
       phone: normalisePhone(input.phone),
       email: normaliseEmail(input.email),
+      deactivatedAt: input.status === 'active' ? null : new Date(),
     });
   } catch (err) {
     if (isDuplicateKeyError(err)) throw codeTaken(code);
@@ -291,6 +292,11 @@ export async function updateEnrollee(
   const changes: Partial<Enrollee> = { ...fields };
   if (fields.phone !== undefined) changes.phone = normalisePhone(fields.phone);
   if (fields.email !== undefined) changes.email = normaliseEmail(fields.email);
+  // Capitation counts who was active on the 1st, so remember when a member stopped being active.
+  if (fields.status && fields.status !== current.status) {
+    if (fields.status === 'active') changes.deactivatedAt = null;
+    else if (current.status === 'active') changes.deactivatedAt = new Date();
+  }
   if (userId !== undefined && userId !== current.userId) {
     if (userId) {
       const [account] = await db
@@ -448,6 +454,7 @@ export async function importEnrollees(
         // End of that day in Lagos (WAT, UTC+1), so 31/12/2027 means covered through New Year's Eve.
         validTo: validTo ? new Date(`${validTo}T23:59:59.999+01:00`) : null,
         status: 'active',
+        deactivatedAt: null,
       },
     });
   });
@@ -486,7 +493,7 @@ export async function importEnrollees(
   if (input.endMissing && seen.size) {
     const result = await db
       .update(hmoEnrollees)
-      .set({ status: 'ended' })
+      .set({ status: 'ended', deactivatedAt: new Date() })
       .where(
         and(
           eq(hmoEnrollees.hmoId, hmoId),

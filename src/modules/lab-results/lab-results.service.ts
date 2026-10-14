@@ -54,7 +54,13 @@ export async function priceForUser(userId: string, opts: { enforce?: boolean } =
       quote,
       decision: null,
       hmo: check?.membership
-        ? { covered: false, hmoName: check.membership.hmo.name, notice: check.notice }
+        ? {
+            covered: false,
+            hmoName: check.membership.hmo.name,
+            notice: check.notice,
+            message: check.message ?? null,
+            authorization: check.authorization ?? null,
+          }
         : null,
     };
   return {
@@ -71,6 +77,8 @@ export async function priceForUser(userId: string, opts: { enforce?: boolean } =
       summary: decision.summary,
       standardPrice: decision.standardAmount,
       usage: decision.usage,
+      allowance: decision.allowance,
+      authorizationCode: decision.authorization?.code ?? null,
     },
   };
 }

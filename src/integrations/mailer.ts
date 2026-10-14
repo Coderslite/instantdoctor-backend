@@ -56,6 +56,18 @@ export const mailer = {
   opsPayoutRequested: (input: Parameters<typeof templates.opsPayoutRequested>[0]) =>
     send(env.OPS_EMAIL, 'ops-payout', templates.opsPayoutRequested(input)),
 
+  doctorPayoutUpdate: (input: { to: string } & Parameters<typeof templates.doctorPayoutUpdate>[0]) =>
+    send(input.to, `doctor-payout-${input.event}`, templates.doctorPayoutUpdate(input)),
+
+  doctorBankAccountChanged: (input: { to: string } & Parameters<typeof templates.doctorBankAccountChanged>[0]) =>
+    send(input.to, 'doctor-bank-account', templates.doctorBankAccountChanged(input)),
+
+  opsDoctorPayouts: (input: Parameters<typeof templates.opsDoctorPayouts>[0]) =>
+    send(env.OPS_EMAIL, 'ops-doctor-payout', templates.opsDoctorPayouts(input)),
+
+  opsAppointmentsReview: (input: Parameters<typeof templates.opsAppointmentsReview>[0]) =>
+    send(env.OPS_EMAIL, 'ops-appointments-review', templates.opsAppointmentsReview(input)),
+
   appointmentUpdate: (input: { to: string } & templates.AppointmentEmailInput) =>
     send(input.to, `appointment-${input.event}`, templates.appointmentUpdate(input)),
 
@@ -76,6 +88,9 @@ export const mailer = {
 
   hmoApplicationRejected: (input: { to: string } & Parameters<typeof templates.hmoApplicationRejected>[0]) =>
     send(input.to, 'hmo-application-rejected', templates.hmoApplicationRejected(input)),
+
+  hmoAuthorizationRequested: (input: { to: string } & Parameters<typeof templates.hmoAuthorizationRequested>[0]) =>
+    send(input.to, 'hmo-authorization-requested', templates.hmoAuthorizationRequested(input)),
 
   opsHmoApplication: (input: Parameters<typeof templates.opsHmoApplication>[0]) =>
     send(env.OPS_EMAIL, 'ops-hmo-application', templates.opsHmoApplication(input)),

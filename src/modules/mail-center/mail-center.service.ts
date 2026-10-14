@@ -260,11 +260,13 @@ export async function send(adminId: string, input: SendInput) {
       })),
     );
   }
+  // Read the "sending" snapshot first: delivery can finish before a later read.
+  const sending = await getEmail(id);
   // Sending runs after the response; progress is visible in the history.
   void deliverAll(id, letter, recipients).catch((err: unknown) =>
     logger.error({ err, emailId: id }, 'Letter delivery crashed'),
   );
-  return getEmail(id);
+  return sending;
 }
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));

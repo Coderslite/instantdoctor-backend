@@ -13,6 +13,16 @@ import * as service from './admin.service.js';
 import * as payoutSchemas from '../payouts/payouts.schemas.js';
 import * as payouts from '../payouts/payouts.service.js';
 import { savePayoutSettings } from '../payouts/payouts.settings.js';
+import * as doctorPayoutSchemas from '../doctor-payouts/doctor-payouts.schemas.js';
+import * as doctorPayouts from '../doctor-payouts/doctor-payouts.service.js';
+import { saveDoctorPayoutSettings } from '../doctor-payouts/doctor-payouts.settings.js';
+import * as lifecycle from '../appointments/appointment-lifecycle.js';
+import { z } from 'zod';
+
+const reviewDecisionSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('complete') }),
+  z.object({ action: z.literal('cancel'), refund: z.boolean().default(true) }),
+]);
 import { purposeOf } from '../files/files.routes.js';
 import { fileIdSchema, presignUploadSchema } from '../files/files.schemas.js';
 import { attachFile, completeUpload, createUpload, uploadFile } from '../files/files.service.js';
@@ -105,6 +115,12 @@ adminRouter.post('/appointments', requireAdminRole('admin'), async (req, res) =>
     .status(201)
     .json(await service.createAppointment(parse(schemas.createAppointmentSchema, req.body))),
 );
+// ─── Consultations that couldn't close automatically ───
+adminRouter.get('/appointments/review', async (_req, res) => res.json({ items: await lifecycle.listForReview() }));
+adminRouter.post('/appointments/:id/review', requireAdminRole('admin'), async (req, res) =>
+  res.json(await lifecycle.resolveReview(String(req.params.id), parse(reviewDecisionSchema, req.body), await payouts.adminDisplayName(currentAdmin(req).adminId))),
+);
+
 adminRouter.get('/appointments/:id', async (req, res) =>
   res.json(await service.getAppointment(String(req.params.id))),
 );
@@ -296,6 +312,44 @@ adminRouter.post('/payouts/:id/approve', requireAdminRole('admin'), async (req, 
 );
 adminRouter.post('/payouts/:id/reject', requireAdminRole('admin'), async (req, res) =>
   res.json(await payouts.rejectPayout(String(req.params.id), parse(payoutSchemas.rejectSchema, req.body).reason, await actingAdmin(req))),
+);
+// ─── Doctor payouts ───
+adminRouter.get('/doctor-payouts/overview', async (_req, res) => res.json(await doctorPayouts.adminOverview()));
+adminRouter.get('/doctor-payouts', async (req, res) =>
+  res.json(await doctorPayouts.listPayouts(null, parse(doctorPayoutSchemas.payoutListSchema, req.query))),
+);
+adminRouter.get('/doctor-payouts/balances', async (req, res) =>
+  res.json(await doctorPayouts.doctorBalances(parse(doctorPayoutSchemas.balancesListSchema, req.query))),
+);
+adminRouter.put('/doctor-payouts/settings', requireAdminRole('admin'), async (req, res) =>
+  res.json(await saveDoctorPayoutSettings(parse(payoutSchemas.settingsUpdateSchema, req.body))),
+);
+adminRouter.post('/doctor-payouts/run-weekly', requireAdminRole('admin'), async (req, res) =>
+  res.json(await doctorPayouts.runWeeklyPayouts({ manual: await actingAdmin(req) })),
+);
+adminRouter.post('/doctor-payouts/approve', requireAdminRole('admin'), async (req, res) =>
+  res.json(await doctorPayouts.approvePayouts(parse(payoutSchemas.approveManySchema, req.body).ids, await actingAdmin(req))),
+);
+adminRouter.post('/doctor-payouts/:id/approve', requireAdminRole('admin'), async (req, res) =>
+  res.json(
+    await doctorPayouts.approvePayout(
+      String(req.params.id),
+      await actingAdmin(req),
+      parse(doctorPayoutSchemas.approveSchema, req.body ?? {}).paymentReference,
+    ),
+  ),
+);
+adminRouter.post('/doctor-payouts/:id/reject', requireAdminRole('admin'), async (req, res) =>
+  res.json(await doctorPayouts.rejectPayout(String(req.params.id), parse(payoutSchemas.rejectSchema, req.body).reason, await actingAdmin(req))),
+);
+adminRouter.get('/doctors/:id/ledger', async (req, res) =>
+  res.json({
+    ...(await doctorPayouts.ledger(String(req.params.id), parse(doctorPayoutSchemas.pageSchema, req.query))),
+    summary: await doctorPayouts.summary(String(req.params.id)),
+  }),
+);
+adminRouter.post('/doctors/:id/ledger-adjustments', requireAdminRole('admin'), async (req, res) =>
+  res.json(await doctorPayouts.adjustBalance(String(req.params.id), parse(doctorPayoutSchemas.adjustmentSchema, req.body), await actingAdmin(req))),
 );
 adminRouter.get('/pharmacies/:id/ledger', async (req, res) =>
   res.json({ ...(await payouts.ledger(String(req.params.id), parse(payoutSchemas.pageSchema, req.query))), summary: await payouts.summary(String(req.params.id)) }),

@@ -1,7 +1,8 @@
-import { and, count, eq, gt, gte, isNull, ne, notInArray, or, sql, sum, type SQL } from 'drizzle-orm';
+import { and, asc, count, eq, gt, gte, isNull, ne, notInArray, or, sql, sum, type SQL } from 'drizzle-orm';
 import { db, type Executor, type Tx } from '../../db/client.js';
 import {
   appointments,
+  hmoAuthorizations,
   hmoClaims,
   hmoEnrollees,
   hmoPlanRules,
@@ -213,15 +214,90 @@ export interface CoverageDecision extends CoverageAmounts {
   standardAmount: number;
   summary: string;
   usage: { used: number; limit: number; period: string } | null;
-  /** Medicines: the naira allowance, including what this use takes from it. */
+  /** A naira allowance, including what this use takes from it. */
   allowance: { used: number; limit: number; period: string } | null;
+  /** The HMO's approval this use relies on (pre-authorisation), if the agreement needs one. */
+  authorization: { id: string; code: string; packageId: string | null } | null;
+}
+
+export type CoverageNotice =
+  | 'not_covered'
+  | 'limit_reached'
+  | 'authorization_required'
+  | 'authorization_pending';
+
+/** Plain words for a notice, so apps can show any notice without knowing it. */
+export function noticeMessage(notice: CoverageNotice, hmoName: string, period?: string | null) {
+  switch (notice) {
+    case 'not_covered':
+      return `Not covered by your ${hmoName} plan. Normal price applies.`;
+    case 'limit_reached':
+      return `You’ve used all the cover ${hmoName} gives you for this ${period === 'month' ? 'month' : period === 'year' ? 'year' : 'plan period'}. Normal price applies.`;
+    case 'authorization_required':
+      return `${hmoName} needs to approve this before it’s covered. Request approval and we’ll let you know when they reply.`;
+    case 'authorization_pending':
+      return `Waiting for ${hmoName} to approve your request. You’ll be notified when they reply.`;
+  }
 }
 
 export interface CoverageCheck {
   decision: CoverageDecision | null;
   /** Covered member but this use isn't: why, for the app to explain. */
-  notice: 'not_covered' | 'limit_reached' | null;
+  notice: CoverageNotice | null;
+  /** The notice in plain words. */
+  message?: string | null;
   membership: Membership | null;
+  /** Set when the HMO must approve this use first: what to request, and any request already waiting. */
+  authorization?: {
+    service: HmoService;
+    packageId: string | null;
+    amount: number;
+    pendingRequestId: string | null;
+  } | null;
+}
+
+/**
+ * An approval this use can rely on: approved, in date, for this service (and
+ * package), covering at least `amount`, and not consumed by a use that still
+ * stands — a cancelled or unpaid use gives its approval back.
+ */
+async function availableAuthorization(
+  executor: Executor,
+  enrolleeId: string,
+  service: HmoService,
+  packageId: string | null,
+  amount: number,
+  lock = false,
+  onlyId?: string,
+) {
+  const now = new Date();
+  const query = executor
+    .select({ id: hmoAuthorizations.id, code: hmoAuthorizations.code })
+    .from(hmoAuthorizations)
+    .leftJoin(hmoClaims, eq(hmoClaims.id, hmoAuthorizations.claimId))
+    .leftJoin(appointments, eq(appointments.id, hmoClaims.appointmentId))
+    .leftJoin(labResults, eq(labResults.id, hmoClaims.labResultId))
+    .leftJoin(orders, eq(orders.id, hmoClaims.orderId))
+    .where(
+      and(
+        onlyId ? eq(hmoAuthorizations.id, onlyId) : undefined,
+        eq(hmoAuthorizations.enrolleeId, enrolleeId),
+        eq(hmoAuthorizations.service, service),
+        packageId
+          ? or(isNull(hmoAuthorizations.packageId), eq(hmoAuthorizations.packageId, packageId))
+          : undefined,
+        gt(hmoAuthorizations.expiresAt, now),
+        sql`COALESCE(${hmoAuthorizations.approvedAmount}, ${hmoAuthorizations.requestedAmount}) >= ${amount - 0.005}`,
+        or(
+          eq(hmoAuthorizations.status, 'approved'),
+          and(eq(hmoAuthorizations.status, 'used'), sql`NOT (${countsTowardLimit(now)} <=> TRUE)`),
+        ),
+      ),
+    )
+    .orderBy(asc(hmoAuthorizations.expiresAt))
+    .limit(1);
+  const [row] = lock ? await query.for('update') : await query;
+  return row?.code ? { id: row.id, code: row.code } : null;
 }
 
 /**
@@ -240,6 +316,8 @@ export async function coverageFor(
     executor?: Executor;
     /** Uses priced earlier in the same cart but not yet recorded. */
     pending?: { uses: number; amount: number };
+    /** Price it as if approved (used when asking the HMO for approval). */
+    ignoreAuthorization?: boolean;
   } = {},
 ): Promise<CoverageCheck> {
   const membership =
@@ -252,7 +330,12 @@ export async function coverageFor(
     .where(eq(hmoPlanRules.planId, membership.plan.id));
   const rule = pickRule(rules, service, packageId);
   if (!rule || rule.coverage === 'not_covered')
-    return { decision: null, notice: 'not_covered', membership };
+    return {
+      decision: null,
+      notice: 'not_covered',
+      message: noticeMessage('not_covered', membership.hmo.name),
+      membership,
+    };
 
   const period = rule.limitPeriod ?? 'contract';
   const overLimit = (what: string) => {
@@ -261,7 +344,12 @@ export async function coverageFor(
         'HMO_LIMIT_REACHED',
         `You have used all ${what} covered by ${membership.hmo.name} for this ${period}.`,
       );
-    return { decision: null, notice: 'limit_reached' as const, membership };
+    return {
+      decision: null,
+      notice: 'limit_reached' as const,
+      message: noticeMessage('limit_reached', membership.hmo.name, period),
+      membership,
+    };
   };
 
   let usage: CoverageDecision['usage'] = null;
@@ -283,7 +371,7 @@ export async function coverageFor(
         );
     }
     if (rule.limitAmount != null && spent >= rule.limitAmount)
-      return overLimit(`your ₦${rule.limitAmount.toLocaleString('en-NG')} medicine allowance`);
+      return overLimit(`your ₦${rule.limitAmount.toLocaleString('en-NG')} allowance`);
   }
 
   // Medicines are billed for what was dispensed, never a fixed tariff.
@@ -292,7 +380,13 @@ export async function coverageFor(
     withDoctorShare: service === 'consultation',
     feePolicy: await getFeePolicy(opts.executor),
   });
-  if (!amounts) return { decision: null, notice: 'not_covered', membership };
+  if (!amounts)
+    return {
+      decision: null,
+      notice: 'not_covered',
+      message: noticeMessage('not_covered', membership.hmo.name),
+      membership,
+    };
 
   let allowance: CoverageDecision['allowance'] = null;
   if (rule.limitAmount != null) {
@@ -304,6 +398,52 @@ export async function coverageFor(
     }
     allowance = { used: round2(spent + amounts.hmoAmount), limit: rule.limitAmount, period };
   }
+
+  // Pre-authorisation: above the agreed amount the HMO must approve the use first.
+  // A capitated use costs the HMO nothing per visit, so its value is what the member doesn't pay.
+  const coveredValue = round2(
+    rule.billing === 'capitation' ? standardAmount - amounts.patientAmount : amounts.hmoAmount,
+  );
+  let authorization: CoverageDecision['authorization'] = null;
+  if (
+    !opts.ignoreAuthorization &&
+    rule.authorizationAbove != null &&
+    (rule.authorizationAbove === 0 || coveredValue > rule.authorizationAbove)
+  ) {
+    const executor = opts.executor ?? db;
+    const found = await availableAuthorization(
+      executor,
+      membership.enrollee.id,
+      service,
+      packageId,
+      coveredValue,
+    );
+    authorization = found ? { ...found, packageId } : null;
+    if (!authorization) {
+      const [pending] = await executor
+        .select({ id: hmoAuthorizations.id })
+        .from(hmoAuthorizations)
+        .where(
+          and(
+            eq(hmoAuthorizations.enrolleeId, membership.enrollee.id),
+            eq(hmoAuthorizations.service, service),
+            eq(hmoAuthorizations.status, 'pending'),
+            packageId
+              ? or(isNull(hmoAuthorizations.packageId), eq(hmoAuthorizations.packageId, packageId))
+              : undefined,
+          ),
+        )
+        .limit(1);
+      const notice = pending ? 'authorization_pending' : 'authorization_required';
+      return {
+        decision: null,
+        notice,
+        message: noticeMessage(notice, membership.hmo.name),
+        membership,
+        authorization: { service, packageId, amount: coveredValue, pendingRequestId: pending?.id ?? null },
+      };
+    }
+  }
   return {
     decision: {
       ...amounts,
@@ -313,6 +453,7 @@ export async function coverageFor(
       summary: describeRule(rule),
       usage,
       allowance,
+      authorization,
     },
     notice: null,
     membership,
@@ -356,10 +497,36 @@ export async function recordClaim(
       throw unprocessable(
         'HMO_LIMIT_REACHED',
         rule.service === 'medicines'
-          ? `Your ${membership.hmo.name} medicine allowance just changed. Please review your cart and try again.`
+          ? `Your ${membership.hmo.name} allowance just changed. Please review your cart and try again.`
           : `Your ${membership.hmo.name} limit was just reached. Please try again to book at the normal price.`,
       );
     }
+  }
+  // The approval is consumed by this claim; checked again under a lock so it's used once.
+  if (decision.authorization) {
+    const coveredValue = round2(
+      rule.billing === 'capitation'
+        ? decision.standardAmount - decision.patientAmount
+        : decision.hmoAmount,
+    );
+    const still = await availableAuthorization(
+      tx,
+      membership.enrollee.id,
+      rule.service,
+      decision.authorization.packageId,
+      coveredValue,
+      true,
+      decision.authorization.id,
+    );
+    if (!still)
+      throw unprocessable(
+        'HMO_AUTHORIZATION_USED',
+        `Your ${membership.hmo.name} approval has just been used or has expired. Please request a new one.`,
+      );
+    await tx
+      .update(hmoAuthorizations)
+      .set({ status: 'used', claimId: id })
+      .where(eq(hmoAuthorizations.id, decision.authorization.id));
   }
   await tx.insert(hmoClaims).values({
     id,
@@ -379,6 +546,8 @@ export async function recordClaim(
     patientAmount: decision.patientAmount,
     hmoAmount: decision.hmoAmount,
     doctorEarning: decision.doctorEarning,
+    billing: rule.billing,
+    authorizationCode: decision.authorization?.code ?? null,
     serviceDate: input.serviceDate ?? new Date(),
   });
   return id;

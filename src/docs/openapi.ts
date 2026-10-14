@@ -22,7 +22,11 @@ import * as family from '../modules/family/family.schemas.js';
 import { initializePaymentSchema } from '../modules/payments/payments.service.js';
 import * as pharmacy from '../modules/pharmacy/pharmacy.schemas.js';
 import * as pharmacyPortal from '../modules/pharmacy-portal/pharmacy-portal.schemas.js';
+import * as adminSchemas from '../modules/admin/admin.schemas.js';
+import * as blogAnalytics from '../modules/blog/blog.analytics.js';
+import * as doctorApplications from '../modules/doctor-applications/doctor-applications.schemas.js';
 import * as payoutSchemas from '../modules/payouts/payouts.schemas.js';
+import * as doctorPayoutSchemas from '../modules/doctor-payouts/doctor-payouts.schemas.js';
 import { feePolicyInputSchema } from '../modules/pricing/fees.js';
 import { listReferralsQuery } from '../modules/referrals/referrals.schemas.js';
 import * as reports from '../modules/reports/reports.schemas.js';
@@ -30,7 +34,6 @@ import { FILE_POLICIES, FILE_PURPOSES } from '../modules/files/file-policies.js'
 import { presignUploadSchema, uploadDocSchema } from '../modules/files/files.schemas.js';
 import { certificateSchema } from '../modules/doctors/doctors.schemas.js';
 import * as users from '../modules/users/users.schemas.js';
-import { submitApplicationSchema } from '../modules/doctor-applications/doctor-applications.schemas.js';
 import { joinWaitlistSchema, waitlistStatusQuery } from '../modules/waitlist/waitlist.schemas.js';
 import { listTransactionsQuery, transferSchema } from '../modules/wallet/wallet.schemas.js';
 import * as c from './components.js';
@@ -959,12 +962,31 @@ op('patch', '/care-plans/:id', {
   body: carePlans.updateCarePlanSchema,
   ok: { 200: c.CarePlan.extend({ readings: z.array(c.VitalReading) }) },
 });
+op('delete', '/care-plans/:id', {
+  tag: 'Health',
+  summary: 'Delete a care plan and its readings',
+  params: idParam,
+  ok: { 204: null },
+});
 op('post', '/care-plans/:id/readings', {
   tag: 'Health',
   summary: 'Record a blood pressure or glucose reading',
   params: idParam,
   body: carePlans.vitalReadingSchema,
   ok: { 201: c.CarePlan.extend({ readings: z.array(c.VitalReading) }) },
+});
+op('patch', '/care-plans/:id/readings/:readingId', {
+  tag: 'Health',
+  summary: 'Correct a reading (values are replaced; measuredAt kept unless sent)',
+  params: z.object({ id: z.string(), readingId: z.string() }),
+  body: carePlans.updateVitalReadingSchema,
+  ok: { 200: c.CarePlan.extend({ readings: z.array(c.VitalReading) }) },
+});
+op('delete', '/care-plans/:id/readings/:readingId', {
+  tag: 'Health',
+  summary: 'Delete a reading',
+  params: z.object({ id: z.string(), readingId: z.string() }),
+  ok: { 200: c.CarePlan.extend({ readings: z.array(c.VitalReading) }) },
 });
 
 // ─── Family care ─────────────────────────────────────────────────────────────
@@ -1575,6 +1597,21 @@ op('patch', '/admin/hmos/:hmoId/claims/:claimId', {
   ok: { 200: anyJson },
   errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'CLAIM_PAID | CLAIM_INVOICED' },
 });
+op('get', '/admin/hmos/:hmoId/capitation', {
+  tag: 'HMO admin',
+  summary: 'Capitation against utilisation, month by month',
+  description: `${HMO_ADMIN} For each capitation plan and month: members active on the 1st, the capitation (billed or still due), encounters, their value at normal prices, doctor cost and margin.`,
+  params: hmoParams,
+  query: z.object({ months: z.number().int().min(1).max(36).optional() }),
+  ok: { 200: anyJson },
+});
+op('get', '/admin/hmos/:hmoId/plans/:planId/capitation/:month/members', {
+  tag: 'HMO admin',
+  summary: 'Members counted for a month’s capitation',
+  description: `${HMO_ADMIN} Everyone on the plan active on the 1st of the month (YYYY-MM, Lagos).`,
+  params: hmoParams.extend({ planId: z.string(), month: z.string() }),
+  ok: { 200: anyJson },
+});
 op('get', '/admin/hmos/:hmoId/invoices', {
   tag: 'HMO admin',
   summary: 'Invoices issued to the HMO',
@@ -1889,6 +1926,20 @@ op('get', '/hmo-portal/claims', {
   query: hmoPortal.claimsQuery,
   ok: { 200: anyJson },
 });
+op('get', '/hmo-portal/capitation', {
+  tag: 'HMO portal',
+  summary: 'Capitation and services used, month by month',
+  description: roles('all'),
+  query: z.object({ months: z.number().int().min(1).max(36).optional() }),
+  ok: { 200: anyJson },
+});
+op('get', '/hmo-portal/plans/:planId/capitation/:month/members', {
+  tag: 'HMO portal',
+  summary: 'Members counted for a month’s capitation',
+  description: roles('all'),
+  params: z.object({ planId: z.string(), month: z.string() }),
+  ok: { 200: anyJson },
+});
 op('get', '/hmo-portal/invoices', {
   tag: 'HMO portal',
   summary: 'Invoices issued to the HMO',
@@ -1985,7 +2036,7 @@ op('post', '/doctor-applications', {
   description:
     'Creates a pending application. Required documents: practising_licence, registration_certificate, medical_degree, government_id, headshot, cv. When an admin approves it, a doctor account is created with this email and password and the applicant is emailed how to sign in to the doctor app.',
   auth: false,
-  body: submitApplicationSchema,
+  body: doctorApplications.submitApplicationSchema,
   ok: {
     201: z.object({
       id: z.string(),
@@ -2516,6 +2567,167 @@ op('post', '/admin/pharmacies/:id/ledger-adjustments', {
   body: payoutSchemas.adjustmentSchema,
   ok: { 200: z.object({ balance: z.number(), available: z.number(), pending: z.number() }) },
 });
+op('get', '/admin/appointments/review', {
+  tag: 'Admin',
+  summary: 'Consultations that ended but could not close automatically',
+  description:
+    'Active consultations with no sign the doctor took part (no doctor chat message, no answered call) 30 minutes after their end time, and paid bookings no doctor accepted. Consultations the doctor took part in are completed automatically.',
+  ok: { 200: z.record(z.string(), z.unknown()) },
+});
+op('post', '/admin/appointments/:id/review', {
+  tag: 'Admin',
+  summary: 'Complete a flagged consultation (doctor is paid) or cancel it (optionally refunding the patient’s naira payment to their wallet)',
+  params: idParam,
+  body: z.discriminatedUnion('action', [
+    z.object({ action: z.literal('complete') }),
+    z.object({ action: z.literal('cancel'), refund: z.boolean().default(true) }),
+  ]),
+  ok: { 200: z.record(z.string(), z.unknown()) },
+  errors: { 422: 'REFUND_NOT_IN_NAIRA' },
+});
+// ── Admin console (core) ───────────────────────────────────────────────────
+const adminJson = z.record(z.string(), z.unknown());
+const adminOp = (method: Method, path: string, summary: string, extra: Partial<Operation> = {}) =>
+  op(method, path, { tag: 'Admin', summary, description: ADMIN, ok: { 200: adminJson }, ...extra });
+op('post', '/admin/auth/login', {
+  tag: 'Admin',
+  summary: 'Admin sign-in',
+  auth: false,
+  body: adminSchemas.adminLoginSchema,
+  ok: { 200: adminJson },
+  errors: { 401: 'INVALID_CREDENTIALS (rate-limited)' },
+});
+adminOp('get', '/admin/dashboard', 'Platform totals and this month’s activity');
+adminOp('get', '/admin/patients', 'Patients directory', { query: adminSchemas.adminListQuery });
+adminOp('get', '/admin/patients/:id', 'A patient’s profile, appointments, orders and payments', { params: idParam });
+adminOp('patch', '/admin/patients/:id', 'Edit a patient', { params: idParam, body: adminSchemas.updatePatientSchema, errors: adminWrite });
+adminOp('post', '/admin/patients/:id/email', 'Email a patient (with app links and contact details)', { params: idParam, body: adminSchemas.patientEmailSchema, errors: adminWrite });
+adminOp('post', '/admin/patients/:id/push', 'Send a patient a push notification', { params: idParam, body: adminSchemas.patientPushSchema, errors: adminWrite });
+adminOp('get', '/admin/doctors', 'Doctors directory', { query: adminSchemas.adminListQuery });
+adminOp('get', '/admin/doctors/:id', 'A doctor’s profile, bank details, earnings and recent appointments', { params: idParam });
+adminOp('patch', '/admin/doctors/:id', 'Edit a doctor', { params: idParam, body: adminSchemas.updateDoctorSchema, errors: adminWrite });
+adminOp('patch', '/admin/users/:id/status', 'Suspend or reactivate an account', { params: idParam, body: adminSchemas.userStatusSchema, errors: adminWrite });
+adminOp('get', '/admin/appointments', 'All appointments', { query: adminSchemas.adminListQuery });
+op('post', '/admin/appointments', { tag: 'Admin', summary: 'Book an appointment for a patient', description: ADMIN, body: adminSchemas.createAppointmentSchema, ok: { 201: adminJson }, errors: adminWrite });
+adminOp('get', '/admin/appointments/:id', 'One appointment', { params: idParam });
+adminOp('patch', '/admin/appointments/:id', 'Edit an appointment', { params: idParam, body: adminSchemas.updateAppointmentSchema, errors: adminWrite });
+adminOp('patch', '/admin/appointments/:id/status', 'Change an appointment’s status (keeps the doctor’s earnings in step)', { params: idParam, body: adminSchemas.appointmentStatusSchema, errors: adminWrite });
+adminOp('get', '/admin/appointment-packages', 'Consultation packages');
+op('post', '/admin/appointment-packages', { tag: 'Admin', summary: 'Create a consultation package', description: ADMIN, body: adminSchemas.appointmentPackageSchema, ok: { 201: adminJson }, errors: adminWrite });
+adminOp('patch', '/admin/appointment-packages/:id', 'Edit a consultation package', { params: idParam, body: adminSchemas.updateAppointmentPackageSchema, errors: adminWrite });
+adminOp('get', '/admin/pharmacies', 'Pharmacies', { query: adminSchemas.adminListQuery });
+op('post', '/admin/pharmacies', { tag: 'Admin', summary: 'Onboard a pharmacy', description: ADMIN, body: adminSchemas.pharmacySchema, ok: { 201: adminJson }, errors: adminWrite });
+adminOp('get', '/admin/pharmacies/:id', 'A pharmacy with its products', { params: idParam });
+adminOp('patch', '/admin/pharmacies/:id', 'Edit a pharmacy', { params: idParam, body: adminSchemas.updatePharmacySchema, errors: adminWrite });
+op('post', '/admin/products', { tag: 'Admin', summary: 'Add a product to a pharmacy', description: ADMIN, body: adminSchemas.productSchema, ok: { 201: adminJson }, errors: adminWrite });
+adminOp('patch', '/admin/products/:id', 'Edit a product', { params: idParam, body: adminSchemas.updateProductSchema, errors: adminWrite });
+adminOp('post', '/admin/pharmacies/:id/products/import', 'Import a pharmacy’s products', { params: idParam, body: adminSchemas.importProductsSchema, errors: adminWrite });
+adminOp('get', '/admin/product-categories', 'Product categories');
+op('post', '/admin/product-categories', { tag: 'Admin', summary: 'Create a product category', description: ADMIN, body: adminSchemas.productCategorySchema, ok: { 201: adminJson }, errors: adminWrite });
+adminOp('patch', '/admin/product-categories/:id', 'Rename a product category', { params: idParam, body: adminSchemas.productCategorySchema, errors: adminWrite });
+op('delete', '/admin/product-categories/:id', { tag: 'Admin', summary: 'Delete a product category', description: ADMIN, params: idParam, ok: { 204: null }, errors: adminWrite });
+adminOp('get', '/admin/orders', 'Pharmacy orders', { query: adminSchemas.adminListQuery });
+adminOp('patch', '/admin/orders/:id/status', 'Change an order’s status', { params: idParam, body: adminSchemas.orderStatusSchema, errors: adminWrite });
+adminOp('get', '/admin/lab-results', 'Lab result interpretations', { query: adminSchemas.adminListQuery });
+adminOp('get', '/admin/lab-results/:id', 'One lab result with its files', { params: idParam });
+adminOp('patch', '/admin/lab-results/:id/status', 'Update a lab result’s status and doctor’s note', { params: idParam, body: adminSchemas.labResultStatusSchema, errors: adminWrite });
+op('post', '/admin/lab-results/:id/upload', {
+  tag: 'Admin',
+  summary: 'Upload the interpretation report (multipart) and complete the lab result',
+  description: `${ADMIN} Prefer \`POST /admin/lab-results/:id/result\` with a directly uploaded file.`,
+  params: idParam,
+  ok: { 201: adminJson },
+  errors: adminWrite,
+});
+adminOp('get', '/admin/payments', 'Payments', { query: adminSchemas.adminListQuery });
+adminOp('patch', '/admin/payments/:id/status', 'Correct a payment’s status', { params: idParam, body: adminSchemas.paymentStatusSchema, errors: adminWrite });
+adminOp('get', '/admin/blog/analytics', 'Blog traffic, reading time and top posts', { query: blogAnalytics.analyticsQuery });
+op('post', '/blog/views/engagement', {
+  tag: 'Content',
+  summary: 'Reading-time beacon from the website (sendBeacon)',
+  auth: false,
+  ok: { 200: adminJson, 204: null },
+});
+adminOp('get', '/admin/doctor-applications', 'Doctor applications', { query: doctorApplications.listApplicationsQuery });
+adminOp('get', '/admin/doctor-applications/:id', 'One doctor application with its documents', { params: idParam });
+adminOp('post', '/admin/doctor-applications/:id/approve', 'Approve an application and create the doctor account', { params: idParam, body: doctorApplications.approveApplicationSchema, errors: adminWrite });
+adminOp('post', '/admin/doctor-applications/:id/reject', 'Reject an application', { params: idParam, body: doctorApplications.rejectApplicationSchema, errors: adminWrite });
+
+// ── Family Care subscription ───────────────────────────────────────────────
+op('get', '/subscriptions/family', { tag: 'Family', summary: 'My Family Care membership, if any', ok: { 200: adminJson } });
+op('post', '/subscriptions/family/trial', { tag: 'Family', summary: 'Start the Family Care free trial', ok: { 201: adminJson }, errors: { 409: 'Trial already used or membership active' } });
+
+// ── Pharmacy portal (core) ─────────────────────────────────────────────────
+const portalOp = (method: Method, path: string, summary: string, extra: Partial<Operation> = {}) =>
+  op(method, `/pharmacy-portal${path}`, { tag: 'Pharmacy portal', summary, ok: { 200: adminJson }, ...extra });
+portalOp('post', '/auth/login', 'Pharmacy or staff sign-in', { auth: false, body: pharmacyPortal.loginSchema, errors: { 401: 'INVALID_CREDENTIALS (rate-limited)' } });
+portalOp('get', '/me', 'The signed-in pharmacy and role');
+portalOp('get', '/dashboard', 'Sales, orders and stock at a glance (manager)');
+portalOp('get', '/categories', 'Product categories');
+portalOp('get', '/suppliers', 'Suppliers', { query: pharmacyPortal.listSchema });
+portalOp('post', '/suppliers', 'Add a supplier', { body: pharmacyPortal.supplierSchema, ok: { 201: adminJson } });
+portalOp('get', '/purchase-orders', 'Purchase orders', { query: pharmacyPortal.listSchema });
+portalOp('post', '/purchase-orders', 'Create a purchase order', { body: pharmacyPortal.purchaseOrderSchema, ok: { 201: adminJson } });
+portalOp('patch', '/purchase-orders/:id/status', 'Place or cancel a purchase order', { params: idParam, body: pharmacyPortal.purchaseOrderStatusSchema });
+portalOp('post', '/purchase-orders/:id/receive', 'Receive delivered stock into inventory', { params: idParam, body: pharmacyPortal.receivePurchaseOrderSchema });
+portalOp('get', '/products', 'Inventory', { query: pharmacyPortal.listSchema });
+portalOp('post', '/products', 'Add a product', { body: pharmacyPortal.productSchema, ok: { 201: adminJson } });
+portalOp('patch', '/products/:id', 'Edit a product', { params: idParam, body: pharmacyPortal.updateProductSchema });
+portalOp('get', '/products/:id/movements', 'Stock movements for a product', { params: idParam });
+portalOp('post', '/products/import', 'Import products', { body: pharmacyPortal.importSchema });
+portalOp('get', '/orders', 'Customer orders', { query: pharmacyPortal.listSchema });
+portalOp('get', '/orders/:id', 'An order with its items, prescriptions, timeline and issues', { params: idParam });
+portalOp('patch', '/orders/:id/status', 'Legacy one-step status change', { params: idParam, body: pharmacyPortal.orderStatusSchema });
+portalOp('post', '/orders/:id/actions', 'Accept, dispatch, deliver or cancel (refunds the customer) an order', { params: idParam, body: pharmacyPortal.orderActionSchema });
+portalOp('get', '/orders-board', 'Order counts by stage');
+portalOp('get', '/pulse', 'New orders, open issues and store status (polled for alerts)');
+portalOp('patch', '/availability', 'Switch accepting orders on or off', { body: pharmacyPortal.availabilitySchema });
+portalOp('post', '/go-live', 'Go live on the marketplace');
+portalOp('post', '/go-offline', 'Leave the marketplace');
+portalOp('get', '/reviews', 'Customer reviews', { query: pharmacyPortal.pageSchema });
+portalOp('post', '/reviews/:id/reply', 'Reply to a review', { params: idParam, body: pharmacyPortal.reviewReplySchema });
+portalOp('get', '/issues', 'Problems customers reported', { query: pharmacyPortal.issueListSchema });
+portalOp('post', '/issues/:id/respond', 'Respond to (and optionally resolve) a reported problem', { params: idParam, body: pharmacyPortal.issueResponseSchema });
+portalOp('patch', '/profile', 'Edit the store profile, hours and delivery settings', { body: pharmacyPortal.profileSchema });
+portalOp('patch', '/password', 'Change the password', { body: pharmacyPortal.passwordSchema });
+
+const PA_FLOW =
+  'Pre-authorisation: when an agreement rule has an approval threshold, uses costing the HMO more than it (or every use, at ₦0) need the HMO’s approval first. The member requests it; the HMO approves in its portal (issuing a PA code, valid 14 days by default) or declines. The next matching booking, lab review or medicine order uses the approval automatically and the PA code goes on the claim. A cancelled or unpaid use gives the approval back.';
+op('get', '/hmo/authorizations', { tag: 'HMO', summary: 'My approval requests and PA codes', description: PA_FLOW, ok: { 200: z.record(z.string(), z.unknown()) } });
+op('post', '/hmo/authorizations', {
+  tag: 'HMO',
+  summary: 'Ask my HMO to approve a service',
+  description: `${PA_FLOW} Consultations need \`packageId\`; medicines need \`amount\` (normal cost of the prescribed medicines). Returns the waiting request if one is already open.`,
+  body: hmo.authorizationRequestSchema,
+  ok: { 201: z.record(z.string(), z.unknown()) },
+  errors: { 404: 'No HMO membership', 409: 'APPROVAL_NOT_NEEDED', 422: 'NOT_COVERED' },
+});
+op('post', '/hmo/authorizations/:id/cancel', { tag: 'HMO', summary: 'Withdraw an approval request still waiting', params: idParam, ok: { 200: z.record(z.string(), z.unknown()) } });
+op('get', '/admin/hmos/:hmoId/authorizations', { tag: 'HMO admin', summary: 'Members’ approval requests', description: `${HMO_ADMIN} ${PA_FLOW}`, params: hmoParams, query: hmo.authorizationsQuery, ok: { 200: z.record(z.string(), z.unknown()) } });
+op('post', '/admin/hmos/:hmoId/authorizations/:id/decision', { tag: 'HMO admin', summary: 'Approve (issue a PA code) or decline a request on the HMO’s behalf', description: HMO_ADMIN, params: hmoParams.extend({ id: z.string() }), body: hmo.authorizationDecisionSchema, ok: { 200: z.record(z.string(), z.unknown()) }, errors: { 409: 'ALREADY_DECIDED' } });
+op('get', '/hmo-portal/authorizations', { tag: 'HMO portal', summary: 'Members’ approval requests', description: roles('all'), query: hmo.authorizationsQuery, ok: { 200: z.record(z.string(), z.unknown()) } });
+op('post', '/hmo-portal/authorizations/:id/decision', { tag: 'HMO portal', summary: 'Approve (issue a PA code) or decline a request', description: roles('admin, manager'), params: idParam, body: hmo.authorizationDecisionSchema, ok: { 200: z.record(z.string(), z.unknown()) }, errors: { 409: 'ALREADY_DECIDED' } });
+const DOCTOR_PAYOUT_FLOW =
+  'Completed paid consultations credit the doctor\'s ledger (in their earning currency); earnings clear at the configured hour the next Lagos day. Weekly (or on request) the available balance becomes a payout that an admin approves: naira payouts to a verified Nigerian account go by Paystack transfer, others are paid outside the app and recorded with a reference.';
+const json = z.record(z.string(), z.unknown());
+op('get', '/doctor-earnings', { tag: 'Doctors', summary: 'My balances, open payouts, bank account and next weekly payout', description: DOCTOR_PAYOUT_FLOW, ok: { 200: json } });
+op('get', '/doctor-earnings/ledger', { tag: 'Doctors', summary: 'My earnings statement', query: doctorPayoutSchemas.pageSchema, ok: { 200: json } });
+op('get', '/doctor-earnings/payouts', { tag: 'Doctors', summary: 'My payouts', query: doctorPayoutSchemas.payoutListSchema, ok: { 200: json } });
+op('post', '/doctor-earnings/payouts', { tag: 'Doctors', summary: 'Withdraw available earnings', body: doctorPayoutSchemas.payoutRequestSchema, ok: { 201: json }, errors: { 409: 'PAYOUT_IN_PROGRESS', 422: 'NO_BANK_ACCOUNT | INSUFFICIENT_BALANCE' } });
+op('post', '/doctor-earnings/payouts/:id/cancel', { tag: 'Doctors', summary: 'Cancel a withdrawal still waiting for approval', params: idParam, ok: { 200: json } });
+op('get', '/doctor-earnings/banks', { tag: 'Doctors', summary: 'Nigerian banks for payouts', ok: { 200: json } });
+op('get', '/doctor-earnings/bank-account', { tag: 'Doctors', summary: 'My payout bank account', ok: { 200: json } });
+op('put', '/doctor-earnings/bank-account', { tag: 'Doctors', summary: 'Set my payout bank account', description: 'Send `bankCode` + 10-digit `accountNumber` for a Nigerian account (the name comes from the bank), or `bankName`, `accountNumber`, `accountName` for an account abroad (paid manually).', body: doctorPayoutSchemas.bankAccountSchema, ok: { 200: json }, errors: { 409: 'PAYOUT_IN_PROGRESS', 422: 'ACCOUNT_NOT_FOUND' } });
+op('get', '/admin/doctor-payouts/overview', { tag: 'Admin', summary: 'Doctor payout queue, amounts owed, next weekly run and settings', description: DOCTOR_PAYOUT_FLOW, ok: { 200: json } });
+op('get', '/admin/doctor-payouts', { tag: 'Admin', summary: 'All doctor payouts', query: doctorPayoutSchemas.payoutListSchema, ok: { 200: json } });
+op('get', '/admin/doctor-payouts/balances', { tag: 'Admin', summary: 'What each doctor is owed', query: doctorPayoutSchemas.balancesListSchema, ok: { 200: json } });
+op('put', '/admin/doctor-payouts/settings', { tag: 'Admin', summary: 'Doctor payout schedule and clearing settings', body: payoutSchemas.settingsUpdateSchema, ok: { 200: json } });
+op('post', '/admin/doctor-payouts/run-weekly', { tag: 'Admin', summary: 'Create this week’s doctor payouts now', ok: { 200: json } });
+op('post', '/admin/doctor-payouts/approve', { tag: 'Admin', summary: 'Send several Paystack doctor payouts', body: payoutSchemas.approveManySchema, ok: { 200: json } });
+op('post', '/admin/doctor-payouts/:id/approve', { tag: 'Admin', summary: 'Send a doctor payout, or record a manual one as paid', description: 'Manual payouts need the `paymentReference` of the transfer you made.', params: idParam, body: doctorPayoutSchemas.approveSchema, ok: { 200: json }, errors: { 422: 'TRANSFER_REFUSED' } });
+op('post', '/admin/doctor-payouts/:id/reject', { tag: 'Admin', summary: 'Decline a doctor payout (money returns to their balance)', params: idParam, body: payoutSchemas.rejectSchema, ok: { 200: json } });
+op('get', '/admin/doctors/:id/ledger', { tag: 'Admin', summary: 'A doctor’s earnings statement and payout summary', params: idParam, query: doctorPayoutSchemas.pageSchema, ok: { 200: json } });
+op('post', '/admin/doctors/:id/ledger-adjustments', { tag: 'Admin', summary: 'Credit or debit a doctor balance with a reason', params: idParam, body: doctorPayoutSchemas.adjustmentSchema, ok: { 200: json } });
 const DIRECT_UPLOAD = [
   '**Preferred upload flow** — the file goes straight to storage, never through the API:',
   '1. `POST …/uploads/presign` with `purpose`, `contentType`, exact `size` (bytes) and optional `name`. The purpose policy (type, size, who may upload) is checked here.',

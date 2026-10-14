@@ -111,6 +111,8 @@ export async function myCoverage(userId: string) {
           rule.limitAmount != null && used
             ? { limit: rule.limitAmount, used: used.amount, period: rule.limitPeriod }
             : null,
+        /** The HMO must approve uses costing it more than this (0 = every use). */
+        approvalAbove: rule.authorizationAbove,
       };
     }),
   );

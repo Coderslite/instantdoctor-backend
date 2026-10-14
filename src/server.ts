@@ -8,6 +8,12 @@ import { purgeAbandonedUploads, purgeUnclaimedApplicantFiles } from './modules/f
 import { reconcilePendingPayments } from './modules/payments/payments.service.js';
 import { sweepUnsettledOrders } from './modules/payouts/payouts.ledger.js';
 import { reconcilePayouts, runWeeklyPayouts } from './modules/payouts/payouts.service.js';
+import { sweepUnsettledAppointments } from './modules/doctor-payouts/doctor-payouts.ledger.js';
+import { closeFinishedAppointments, remindDoctorsToComplete } from './modules/appointments/appointment-lifecycle.js';
+import {
+  reconcilePayouts as reconcileDoctorPayouts,
+  runWeeklyPayouts as runWeeklyDoctorPayouts,
+} from './modules/doctor-payouts/doctor-payouts.service.js';
 import { closeRealtime, initRealtime } from './realtime/gateway.js';
 
 const app = createApp();
@@ -64,6 +70,13 @@ const payoutJobs = () => {
     if (settled) logger.info({ settled }, 'Pharmacy payouts reconciled');
     const run = await runWeeklyPayouts();
     if (run) logger.info(run, 'Weekly pharmacy payouts created');
+    // Doctor money: the same three jobs for consultation earnings.
+    const earned = await sweepUnsettledAppointments();
+    if (earned) logger.info({ earned }, 'Doctor earnings credited by sweep');
+    const doctorSettled = await reconcileDoctorPayouts();
+    if (doctorSettled) logger.info({ settled: doctorSettled }, 'Doctor payouts reconciled');
+    const doctorRun = await runWeeklyDoctorPayouts();
+    if (doctorRun) logger.info(doctorRun, 'Weekly doctor payouts created');
   })()
     .catch((err: unknown) => logger.error({ err }, 'Payout jobs failed'))
     .finally(() => (payoutsBusy = false));
@@ -71,6 +84,24 @@ const payoutJobs = () => {
 const payoutSweep = setInterval(payoutJobs, 5 * 60 * 1000);
 payoutSweep.unref();
 setTimeout(payoutJobs, 90 * 1000).unref();
+
+// Consultations: remind doctors at the end time, then close finished ones (or send them to review).
+let lifecycleBusy = false;
+const lifecycleJobs = () => {
+  if (lifecycleBusy) return;
+  lifecycleBusy = true;
+  (async () => {
+    const reminded = await remindDoctorsToComplete();
+    if (reminded) logger.info({ reminded }, 'Doctors reminded to complete consultations');
+    const closed = await closeFinishedAppointments();
+    if (closed.completed || closed.flagged) logger.info(closed, 'Finished consultations closed');
+  })()
+    .catch((err: unknown) => logger.error({ err }, 'Consultation lifecycle jobs failed'))
+    .finally(() => (lifecycleBusy = false));
+};
+const lifecycleSweep = setInterval(lifecycleJobs, 5 * 60 * 1000);
+lifecycleSweep.unref();
+setTimeout(lifecycleJobs, 2 * 60 * 1000).unref();
 
 let shuttingDown = false;
 async function shutdown(signal: string) {
@@ -80,6 +111,7 @@ async function shutdown(signal: string) {
   clearInterval(housekeeping);
   clearInterval(paymentSweep);
   clearInterval(payoutSweep);
+  clearInterval(lifecycleSweep);
   const force = setTimeout(() => process.exit(1), 15_000);
   force.unref();
   server.close();

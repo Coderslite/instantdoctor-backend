@@ -51,6 +51,7 @@ import { sendPush } from '../../integrations/push.js';
 import { createNotification } from '../notifications/notifications.service.js';
 import { COMMERCIAL_FEES_SETTINGS_KEY, getFeePolicy, type FeePolicy } from '../pricing/fees.js';
 import { settleOrder } from '../payouts/payouts.ledger.js';
+import { settleAppointment } from '../doctor-payouts/doctor-payouts.ledger.js';
 
 type ListQuery = { search?: string; status?: string; limit: number; offset: number };
 const patient = alias(users, 'patient');
@@ -662,7 +663,18 @@ export async function setAppointmentStatus(
     .where(eq(appointments.id, id))
     .limit(1);
   if (!item) throw notFound('Appointment');
-  await db.update(appointments).set({ status }).where(eq(appointments.id, id));
+  await db.transaction(async (tx) => {
+    await tx
+      .update(appointments)
+      .set({
+        status,
+        ...(status === 'completed' ? { completedAt: new Date(), completedBy: 'admin', needsReviewAt: null, reviewReason: null } : {}),
+        ...(status === 'cancelled' ? { needsReviewAt: null, reviewReason: null } : {}),
+      })
+      .where(eq(appointments.id, id));
+    // Keep the doctor's earnings in step with the new status.
+    await settleAppointment(tx, id);
+  });
   return { id, status };
 }
 

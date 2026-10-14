@@ -1,3 +1,4 @@
+import { doctorEarningsRouter } from './modules/doctor-payouts/doctor-payouts.routes.js';
 import { Router } from 'express';
 import { anonymousRouter } from './modules/anonymous/anonymous.routes.js';
 import { appointmentsRouter } from './modules/appointments/appointments.routes.js';
@@ -55,6 +56,7 @@ apiRouter.use('/hmo-portal', hmoPortalRouter);
 apiRouter.use('/auth', authRouter);
 apiRouter.use('/users', usersRouter);
 apiRouter.use('/doctors', doctorsRouter);
+apiRouter.use('/doctor-earnings', doctorEarningsRouter);
 apiRouter.use('/doctor-applications', doctorApplicationsRouter);
 apiRouter.use('/appointments', appointmentsRouter);
 apiRouter.use('/prescriptions', prescriptionsRouter);

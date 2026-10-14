@@ -18,17 +18,21 @@ import type { z } from 'zod';
 import { db, type Executor } from '../../db/client.js';
 import {
   appointments,
+  hmoCapitationLines,
   hmoClaims,
   hmoInvoices,
+  hmoPlans,
   labResults,
   orders,
   users,
 } from '../../db/schema/index.js';
+import { isDuplicateKeyError } from '../../lib/db-errors.js';
 import { conflict, notFound, unprocessable } from '../../lib/errors.js';
 import { newId } from '../../lib/ids.js';
 import { round2 } from '../../lib/money.js';
 import { recordActivity, type Actor } from './hmo.activity.js';
 import { requireHmo } from './hmo.agreements.js';
+import { capitationDue } from './hmo.capitation.js';
 import type {
   claimUpdateSchema,
   claimsQuery,
@@ -107,6 +111,8 @@ export async function listClaims(hmoId: string, query: z.infer<typeof claimsQuer
         appointmentId: hmoClaims.appointmentId,
         labResultId: hmoClaims.labResultId,
         orderId: hmoClaims.orderId,
+        billing: hmoClaims.billing,
+        authorizationCode: hmoClaims.authorizationCode,
         serviceDate: hmoClaims.serviceDate,
         serviceState,
       })
@@ -152,9 +158,16 @@ async function recomputeInvoice(executor: Executor, invoiceId: string) {
     .select({ n: count(), total: sum(hmoClaims.hmoAmount).mapWith(Number) })
     .from(hmoClaims)
     .where(and(eq(hmoClaims.invoiceId, invoiceId), ne(hmoClaims.status, 'rejected')));
+  const [invoice] = await executor
+    .select({ capitation: hmoInvoices.capitationAmount })
+    .from(hmoInvoices)
+    .where(eq(hmoInvoices.id, invoiceId));
   await executor
     .update(hmoInvoices)
-    .set({ claimCount: row?.n ?? 0, totalAmount: round2(row?.total ?? 0) })
+    .set({
+      claimCount: row?.n ?? 0,
+      totalAmount: round2((row?.total ?? 0) + (invoice?.capitation ?? 0)),
+    })
     .where(eq(hmoInvoices.id, invoiceId));
 }
 
@@ -218,7 +231,12 @@ async function nextInvoiceReference(
   return `INV/${code}/${now.getUTCFullYear()}/${month}/${String((row?.n ?? 0) + 1).padStart(4, '0')}`;
 }
 
-/** Bills every unbilled, billable claim with a service date in the period. */
+/**
+ * Bills every unbilled, billable claim with a service date in the period —
+ * per-use claims and ₦0 capitation encounters (listed for utilisation) — plus
+ * capitation for each capitation plan and month starting in the period that
+ * hasn't been billed yet.
+ */
 export async function createInvoice(
   hmoId: string,
   adminId: string | null,
@@ -242,17 +260,19 @@ export async function createInvoice(
         and(
           eq(hmoClaims.hmoId, hmoId),
           eq(hmoClaims.status, 'unbilled'),
-          gt(hmoClaims.hmoAmount, 0),
+          or(gt(hmoClaims.hmoAmount, 0), eq(hmoClaims.billing, 'capitation')),
           gte(hmoClaims.serviceDate, from),
           lt(hmoClaims.serviceDate, to),
           serviceStands(),
         ),
       )
       .for('update');
-    if (!eligible.length)
+    const capitation = await capitationDue(hmoId, from, to, tx);
+    const capitationAmount = round2(capitation.reduce((s, l) => s + l.amount, 0));
+    if (!capitation.length && !eligible.some((c) => c.amount > 0))
       throw unprocessable(
         'NOTHING_TO_INVOICE',
-        'There are no billable claims for this HMO in that period',
+        'There are no billable claims or capitation for this HMO in that period',
       );
     const now = new Date();
     await tx.insert(hmoInvoices).values({
@@ -262,11 +282,31 @@ export async function createInvoice(
       periodStart: from,
       periodEnd: new Date(to.getTime() - 1),
       claimCount: eligible.length,
-      totalAmount: round2(eligible.reduce((s, c) => s + c.amount, 0)),
+      capitationAmount,
+      totalAmount: round2(eligible.reduce((s, c) => s + c.amount, 0) + capitationAmount),
       dueAt: new Date(now.getTime() + hmo.paymentTermsDays * 24 * 3600_000),
       notes: input.notes ?? null,
       createdBy: adminId,
     });
+    try {
+      if (capitation.length)
+        await tx.insert(hmoCapitationLines).values(
+          capitation.map((l) => ({
+            id: newId(),
+            invoiceId: id,
+            hmoId,
+            planId: l.planId,
+            month: l.month,
+            members: l.members,
+            rate: l.rate,
+            amount: l.amount,
+          })),
+        );
+    } catch (err) {
+      if (isDuplicateKeyError(err))
+        throw conflict('CAPITATION_ALREADY_BILLED', 'Another invoice just billed this capitation. Refresh and try again.');
+      throw err;
+    }
     for (let i = 0; i < eligible.length; i += 500) {
       await tx
         .update(hmoClaims)
@@ -284,7 +324,12 @@ export async function createInvoice(
     action: 'invoice.issued',
     entityType: 'invoice',
     entityId: id,
-    summary: `Issued invoice ${invoice.reference} for ${naira(invoice.totalAmount)} (${invoice.claimCount} claims, ${input.periodStart} to ${input.periodEnd})`,
+    summary: `Issued invoice ${invoice.reference} for ${naira(invoice.totalAmount)} (${[
+      `${invoice.claimCount} claim${invoice.claimCount === 1 ? '' : 's'}`,
+      invoice.capitationAmount > 0 ? `capitation ${naira(invoice.capitationAmount)}` : null,
+    ]
+      .filter(Boolean)
+      .join(', ')}, ${input.periodStart} to ${input.periodEnd})`,
   });
   return invoice;
 }
@@ -312,6 +357,7 @@ export async function getInvoice(hmoId: string, invoiceId: string) {
       enrolleeCode: hmoClaims.enrolleeCode,
       patientName: sql<string>`TRIM(CONCAT(${users.firstName}, ' ', ${users.lastName}))`,
       description: hmoClaims.description,
+      authorizationCode: hmoClaims.authorizationCode,
       standardAmount: hmoClaims.standardAmount,
       patientAmount: hmoClaims.patientAmount,
       hmoAmount: hmoClaims.hmoAmount,
@@ -322,7 +368,21 @@ export async function getInvoice(hmoId: string, invoiceId: string) {
     .innerJoin(users, eq(users.id, hmoClaims.userId))
     .where(eq(hmoClaims.invoiceId, invoiceId))
     .orderBy(hmoClaims.serviceDate);
-  return { ...invoice, claims };
+  const capitation = await db
+    .select({
+      id: hmoCapitationLines.id,
+      planId: hmoCapitationLines.planId,
+      planName: hmoPlans.name,
+      month: hmoCapitationLines.month,
+      members: hmoCapitationLines.members,
+      rate: hmoCapitationLines.rate,
+      amount: hmoCapitationLines.amount,
+    })
+    .from(hmoCapitationLines)
+    .innerJoin(hmoPlans, eq(hmoPlans.id, hmoCapitationLines.planId))
+    .where(eq(hmoCapitationLines.invoiceId, invoiceId))
+    .orderBy(hmoCapitationLines.month, hmoPlans.name);
+  return { ...invoice, claims, capitation };
 }
 
 /** paid: settles its claims. cancelled: releases them to be billed again. */
@@ -359,6 +419,8 @@ export async function updateInvoice(
         .set({ status: 'unbilled', invoiceId: null })
         .where(and(eq(hmoClaims.invoiceId, invoiceId), eq(hmoClaims.status, 'invoiced')));
       await tx.update(hmoClaims).set({ invoiceId: null }).where(eq(hmoClaims.invoiceId, invoiceId));
+      // Free its capitation months to be billed again.
+      await tx.delete(hmoCapitationLines).where(eq(hmoCapitationLines.invoiceId, invoiceId));
     }
   });
   await recordActivity(hmoId, actor, {
@@ -368,7 +430,7 @@ export async function updateInvoice(
     summary:
       input.status === 'paid'
         ? `Recorded payment of invoice ${invoice.reference} (${naira(invoice.totalAmount)})${input.paymentReference ? `, ref ${input.paymentReference}` : ''}`
-        : `Cancelled invoice ${invoice.reference}; its claims can be billed again`,
+        : `Cancelled invoice ${invoice.reference}; its claims${invoice.capitation.length ? ' and capitation' : ''} can be billed again`,
   });
   return getInvoice(hmoId, invoiceId);
 }

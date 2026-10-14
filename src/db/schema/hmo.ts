@@ -1,5 +1,6 @@
 import {
   boolean,
+  char,
   decimal,
   index,
   int,
@@ -47,6 +48,12 @@ export const hmos = mysqlTable(
   (t) => [uniqueIndex('hmos_code_uq').on(t.code)],
 );
 
+export const HMO_PAYMENT_MODELS = ['fee_for_service', 'capitation'] as const;
+export type HmoPaymentModel = (typeof HMO_PAYMENT_MODELS)[number];
+/** How a covered use is paid for: billed per use, or already paid by the monthly capitation. */
+export const HMO_BILLING = ['per_use', 'capitation'] as const;
+export type HmoBilling = (typeof HMO_BILLING)[number];
+
 export const hmoPlans = mysqlTable(
   'hmo_plans',
   {
@@ -59,6 +66,14 @@ export const hmoPlans = mysqlTable(
     /** Contract window; coverage only applies inside it. Null = open-ended. */
     validFrom: timestamp('valid_from'),
     validTo: timestamp('valid_to'),
+    /**
+     * fee_for_service: the HMO pays per covered use (claims).
+     * capitation: the HMO also pays `capitationRate` per enrollee per month, and
+     * rules billed by capitation cost it nothing per use.
+     */
+    paymentModel: mysqlEnum('payment_model', HMO_PAYMENT_MODELS).notNull().default('fee_for_service'),
+    /** Naira per enrollee per month (capitation plans). */
+    capitationRate: money('capitation_rate'),
     notes: text('notes'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -113,6 +128,13 @@ export const hmoPlanRules = mysqlTable(
     limitAmount: money('limit_amount'),
     limitPeriod: mysqlEnum('limit_period', HMO_LIMIT_PERIODS),
     overLimit: mysqlEnum('over_limit', HMO_OVER_LIMIT).notNull().default('standard_price'),
+    /**
+     * Pre-authorisation: when the HMO's share of a use is above this (naira),
+     * the HMO must approve it first. 0 = always; null = never.
+     */
+    authorizationAbove: money('authorization_above'),
+    /** capitation: uses cost the HMO nothing (covered by the monthly payment); capitation plans only. */
+    billing: mysqlEnum('billing', HMO_BILLING).notNull().default('per_use'),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -143,6 +165,8 @@ export const hmoEnrollees = mysqlTable(
     /** YYYY-MM-DD. */
     dateOfBirth: varchar('date_of_birth', { length: 10 }),
     status: mysqlEnum('status', HMO_ENROLLEE_STATUSES).notNull().default('active'),
+    /** When the member last stopped being active; capitation counts who was active on the 1st. */
+    deactivatedAt: timestamp('deactivated_at'),
     validFrom: timestamp('valid_from'),
     validTo: timestamp('valid_to'),
     userId: id('user_id').references(() => users.id, { onDelete: 'set null' }),
@@ -214,6 +238,10 @@ export const hmoClaims = mysqlTable(
     patientAmount: money('patient_amount').notNull(),
     hmoAmount: money('hmo_amount').notNull(),
     doctorEarning: money('doctor_earning'),
+    /** The HMO's pre-authorisation (PA) code, when the use needed approval. */
+    authorizationCode: varchar('authorization_code', { length: 40 }),
+    /** capitation: an encounter (₦0 to the HMO) recorded for utilisation; it still goes on the invoice. */
+    billing: mysqlEnum('billing', HMO_BILLING).notNull().default('per_use'),
     currency: varchar('currency', { length: 3 }).notNull().default('NGN'),
     status: mysqlEnum('status', HMO_CLAIM_STATUSES).notNull().default('unbilled'),
     invoiceId: id('invoice_id'),
@@ -245,6 +273,8 @@ export const hmoInvoices = mysqlTable(
     periodStart: timestamp('period_start').notNull(),
     periodEnd: timestamp('period_end').notNull(),
     claimCount: int('claim_count').notNull(),
+    /** Capitation billed on this invoice; included in totalAmount. */
+    capitationAmount: money('capitation_amount').notNull().default(0),
     totalAmount: money('total_amount').notNull(),
     currency: varchar('currency', { length: 3 }).notNull().default('NGN'),
     status: mysqlEnum('status', HMO_INVOICE_STATUSES).notNull().default('issued'),
@@ -259,6 +289,91 @@ export const hmoInvoices = mysqlTable(
   (t) => [
     uniqueIndex('hmo_invoices_reference_uq').on(t.reference),
     index('hmo_invoices_hmo_idx').on(t.hmoId, t.createdAt),
+  ],
+);
+
+export const HMO_AUTHORIZATION_STATUSES = ['pending', 'approved', 'rejected', 'cancelled', 'used'] as const;
+export type HmoAuthorizationStatus = (typeof HMO_AUTHORIZATION_STATUSES)[number];
+
+/**
+ * A pre-authorisation request: the member asks the HMO to approve a use whose
+ * cost is above the agreement's threshold. Approval issues a PA code that the
+ * next matching use consumes; if that use is cancelled the approval frees up.
+ */
+export const hmoAuthorizations = mysqlTable(
+  'hmo_authorizations',
+  {
+    id: id('id').primaryKey(),
+    hmoId: id('hmo_id')
+      .notNull()
+      .references(() => hmos.id, { onDelete: 'cascade' }),
+    planId: id('plan_id'),
+    ruleId: id('rule_id'),
+    enrolleeId: id('enrollee_id')
+      .notNull()
+      .references(() => hmoEnrollees.id, { onDelete: 'cascade' }),
+    userId: id('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    service: mysqlEnum('service', HMO_SERVICES).notNull(),
+    /** Consultations: the package asked for; null = any package. */
+    packageId: id('package_id'),
+    description: varchar('description', { length: 255 }).notNull(),
+    patientNote: varchar('patient_note', { length: 1000 }),
+    /** Normal price of what was asked for. */
+    standardAmount: money('standard_amount').notNull(),
+    /** What the HMO would pay (its share). */
+    requestedAmount: money('requested_amount').notNull(),
+    /** Most the approval covers; defaults to the requested amount. */
+    approvedAmount: money('approved_amount'),
+    status: mysqlEnum('status', HMO_AUTHORIZATION_STATUSES).notNull().default('pending'),
+    /** PA code issued on approval, e.g. PA-AVON-7KQ2M9. */
+    code: varchar('code', { length: 40 }),
+    /** The HMO's own reference from its system, if it gave one. */
+    hmoReference: varchar('hmo_reference', { length: 80 }),
+    decisionNote: varchar('decision_note', { length: 500 }),
+    decidedBy: varchar('decided_by', { length: 200 }),
+    decidedAt: timestamp('decided_at'),
+    /** An approval must be used before this. */
+    expiresAt: timestamp('expires_at'),
+    /** The claim that used the approval. */
+    claimId: id('claim_id'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('hmo_authorizations_code_uq').on(t.code),
+    index('hmo_authorizations_hmo_idx').on(t.hmoId, t.status, t.createdAt),
+    index('hmo_authorizations_enrollee_idx').on(t.enrolleeId, t.service, t.status),
+  ],
+);
+
+/**
+ * One capitation charge: a capitation plan's members on the 1st of a month ×
+ * its rate. Unique per plan and month so a month is never billed twice;
+ * cancelling the invoice deletes its lines so the month can be billed again.
+ */
+export const hmoCapitationLines = mysqlTable(
+  'hmo_capitation_lines',
+  {
+    id: id('id').primaryKey(),
+    invoiceId: id('invoice_id')
+      .notNull()
+      .references(() => hmoInvoices.id, { onDelete: 'cascade' }),
+    hmoId: id('hmo_id').notNull(),
+    planId: id('plan_id')
+      .notNull()
+      .references(() => hmoPlans.id, { onDelete: 'cascade' }),
+    /** YYYY-MM (Lagos). */
+    month: char('month', { length: 7 }).notNull(),
+    members: int('members').notNull(),
+    rate: money('rate').notNull(),
+    amount: money('amount').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('hmo_capitation_lines_plan_month_uq').on(t.planId, t.month),
+    index('hmo_capitation_lines_invoice_idx').on(t.invoiceId),
   ],
 );
 

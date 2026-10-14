@@ -232,6 +232,34 @@
       "when": 1791660000000,
       "tag": "0032_hmo_applications",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "5",
+      "when": 1791670000000,
+      "tag": "0033_hmo_capitation",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "5",
+      "when": 1791680000000,
+      "tag": "0034_doctor_payouts",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "5",
+      "when": 1791690000000,
+      "tag": "0035_appointment_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "5",
+      "when": 1791700000000,
+      "tag": "0036_hmo_preauthorization",
+      "breakpoints": true
     }
   ]
 }

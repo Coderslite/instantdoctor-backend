@@ -29,7 +29,21 @@ carePlansRouter.patch('/:id', async (req, res) => {
   res.json(await service.updateCarePlan(currentUser(req).userId, req.params.id, input));
 });
 
+carePlansRouter.delete('/:id', async (req, res) => {
+  await service.deleteCarePlan(currentUser(req).userId, req.params.id);
+  res.status(204).end();
+});
+
 carePlansRouter.post('/:id/readings', async (req, res) => {
   const input = parse(schemas.vitalReadingSchema, req.body);
   res.status(201).json(await service.addVitalReading(currentUser(req).userId, req.params.id, input));
+});
+
+carePlansRouter.patch('/:id/readings/:readingId', async (req, res) => {
+  const input = parse(schemas.updateVitalReadingSchema, req.body);
+  res.json(await service.updateVitalReading(currentUser(req).userId, req.params.id, req.params.readingId, input));
+});
+
+carePlansRouter.delete('/:id/readings/:readingId', async (req, res) => {
+  res.json(await service.deleteVitalReading(currentUser(req).userId, req.params.id, req.params.readingId));
 });
