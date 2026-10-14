@@ -136,13 +136,14 @@ async function nextReference(now = new Date()) {
 }
 
 const letterOf = (
-  input: { subject: string; body: string; signatureName: string; signatureTitle?: string | null },
+  input: { style?: 'letter' | 'email'; subject: string; body: string; signatureName: string; signatureTitle?: string | null },
   reference: string,
   date = new Date(),
 ): Letter => {
   const body = sanitizeLetterBody(input.body);
-  if (!body.replace(/<[^>]+>/g, '').trim()) throw badRequest('Write the letter before sending');
+  if (!body.replace(/<[^>]+>/g, '').trim()) throw badRequest('Write the message before sending');
   return {
+    style: input.style ?? 'letter',
     subject: input.subject,
     body,
     reference,
@@ -153,6 +154,7 @@ const letterOf = (
 };
 
 const officialMail = (letter: Letter, to: Recipient, category: string) => {
+  if (letter.style === 'email') category = category.replace('admin-letter', 'admin-email');
   const { html, text } = renderLetter(letter, to);
   return {
     to: to.email,
@@ -166,6 +168,7 @@ const officialMail = (letter: Letter, to: Recipient, category: string) => {
 };
 
 export function preview(input: {
+  style?: 'letter' | 'email';
   subject: string;
   body: string;
   signatureName: string;
@@ -178,14 +181,17 @@ export function preview(input: {
   reference?: string;
   date?: string;
 }) {
+  const email = input.style === 'email';
   const letter: Letter = {
+    style: input.style ?? 'letter',
     subject: input.subject,
     body:
       sanitizeLetterBody(input.body) ||
-      '<p style="color:#94a3b8;">Your letter will appear here.</p>',
+      `<p style="color:#94a3b8;">Your ${email ? 'message' : 'letter'} will appear here.</p>`,
     reference: input.reference || 'ID/PREVIEW',
     date: input.date ? new Date(input.date) : new Date(),
-    signatureName: input.signatureName || 'Your name',
+    // Emails sign off only if a name is given.
+    signatureName: input.signatureName || (email ? '' : 'Your name'),
     signatureTitle: input.signatureTitle || null,
   };
   // A real recipient with no name (or an organisation with no contact) is addressed
@@ -234,6 +240,7 @@ export async function send(adminId: string, input: SendInput) {
     body: letter.body,
     signatureName: letter.signatureName,
     signatureTitle: letter.signatureTitle,
+    style: letter.style ?? 'letter',
     audience: {
       segment: input.segment ?? null,
       emails: input.emails.length,
@@ -314,6 +321,7 @@ async function deliverAll(emailId: string, letter: Letter, recipients: Recipient
 const summaryColumns = {
   id: adminEmails.id,
   reference: adminEmails.reference,
+  style: adminEmails.style,
   subject: adminEmails.subject,
   status: adminEmails.status,
   audience: adminEmails.audience,

@@ -79,6 +79,7 @@ export function verificationCode(input: {
         'warning',
       ),
     ].join(''),
+    numberFree: true,
   });
   const text = plainText([
     greeting(input.firstName),
@@ -89,7 +90,7 @@ export function verificationCode(input: {
     '',
     `This code expires in ${input.expiresInMinutes} minutes and can only be used once.`,
     `Keep it private: ${BRAND.name} will never ask you for it. If you didn't try to ${copy.action}, you can ignore this email.`,
-  ]);
+  ], { numberFree: true });
   return { subject, html, text };
 }
 

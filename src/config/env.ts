@@ -34,7 +34,7 @@ const schema = z
     SMTP_USER: optionalString,
     SMTP_PASS: optionalString,
     MAIL_FROM: z.string().default('Instant Doctor <no-reply@instantdoctor.co>'),
-    MAIL_REPLY_TO: z.string().default('support@instantdoctor.co'),
+    MAIL_REPLY_TO: z.string().default('contact@instantdoctor.co'),
     OPS_EMAIL: z.string().default('activities@instantdoctor.co'),
     MAIL_LOGO_URL: z.url().default('https://instantdoctor.co/images/logo.png'),
     /** Sender for official letters written in the admin Mail centre (must be a mailbox SMTP_USER may send as). */

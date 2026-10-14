@@ -6,12 +6,20 @@ export type MailSegment = (typeof MAIL_SEGMENTS)[number];
 /** Letters are capped so a mistake can't mail the whole database twice over. */
 export const MAX_RECIPIENTS = 5000;
 
+export const MAIL_STYLES = ['letter', 'email'] as const;
+
 const letterFields = {
+  /** letter: official letter (ref, salutation, signature). email: plain email with the logo header and footer. */
+  style: z.enum(MAIL_STYLES).default('letter'),
   subject: z.string().trim().min(1).max(200),
-  body: z.string().trim().min(1, 'Write the letter before sending').max(200_000),
-  signatureName: z.string().trim().min(1).max(128),
+  body: z.string().trim().min(1, 'Write the message before sending').max(200_000),
+  /** Required on letters; optional sign-off on emails. */
+  signatureName: z.string().trim().max(128).default(''),
   signatureTitle: z.string().trim().max(128).nullish(),
 };
+/** Letters must be signed. */
+const signed = <T extends { style: string; signatureName: string }>(v: T) => v.style === 'email' || v.signatureName.length > 0;
+const signedError = { message: 'Add who the letter is from', path: ['signatureName'] };
 
 export const previewSchema = z.object({
   ...letterFields,
@@ -28,7 +36,7 @@ export const previewSchema = z.object({
   date: z.iso.datetime({ offset: true }).optional(),
 });
 
-export const testSchema = z.object(letterFields);
+export const testSchema = z.object(letterFields).refine(signed, signedError);
 
 export const sendSchema = z
   .object({
@@ -51,6 +59,7 @@ export const sendSchema = z
     userIds: z.array(z.string().max(36)).max(MAX_RECIPIENTS).default([]),
     segment: z.enum(MAIL_SEGMENTS).nullish(),
   })
+  .refine(signed, signedError)
   .refine((v) => v.emails.length > 0 || v.userIds.length > 0 || v.segment, {
     message: 'Choose at least one recipient',
     path: ['emails'],

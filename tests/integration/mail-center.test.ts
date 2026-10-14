@@ -114,6 +114,38 @@ describe('admin mail centre', () => {
     expect(outbox[0]!.text).toContain('Yours sincerely,');
   });
 
+  it('a plain branded email: logo header and footer, no letter parts, signature optional', async () => {
+    const { token } = await createAdmin();
+    const email = { style: 'email', subject: 'New: book lab reviews in the app', body: '<p>Hi {{firstName}}, you can now upload lab results.</p>' };
+    const preview = await api().post('/api/v1/admin/mail/preview').set(auth(token)).send({ ...email, recipientName: 'Chioma Eze' });
+    const html: string = preview.body.html;
+    expect(html).toContain(env.MAIL_LOGO_URL);
+    expect(html).toContain('Hi Chioma, you can now upload lab results.');
+    expect(html).toContain('All rights reserved.');
+    expect(html).toContain('This email was sent to');
+    // Contact details only in the footer, not repeated in the header.
+    const header = html.slice(0, html.indexOf('Hi Chioma'));
+    expect(header).not.toContain(env.MAIL_OFFICIAL_REPLY_TO);
+    for (const letterPart of ['Dear ', 'Yours sincerely', 'Ref:', 'NEW: BOOK LAB REVIEWS', 'Your name']) expect(html).not.toContain(letterPart);
+
+    // Letters still need a signature; emails don't.
+    const unsigned = await api().post('/api/v1/admin/mail').set(auth(token)).send({ ...letter, signatureName: '', emails: [{ email: 'a@b.test' }] });
+    expect(unsigned.status).toBe(400);
+    const res = await api().post('/api/v1/admin/mail').set(auth(token)).send({ ...email, emails: [{ email: 'ada@patient.test', name: 'Ada Obi' }] });
+    expect(res.status).toBe(202);
+    const done = await settled(token, res.body.id);
+    expect(done).toMatchObject({ style: 'email', status: 'sent' });
+    const [mail] = outbox;
+    expect(mail).toMatchObject({ from: env.MAIL_OFFICIAL_FROM, subject: email.subject, category: 'admin-email' });
+    expect(mail!.html).toContain('Hi Ada,');
+    expect(mail!.text).toContain('Hi Ada, you can now upload lab results.');
+    expect(mail!.text).not.toContain('Yours sincerely');
+
+    // A sign-off when given.
+    const signed = await api().post('/api/v1/admin/mail/preview').set(auth(token)).send({ ...email, signatureName: 'The Instant Doctor team' });
+    expect(signed.body.html).toContain('The Instant Doctor team');
+  });
+
   it('mails a whole segment, skipping suspended accounts', async () => {
     const { token } = await createAdmin();
     await createUser();

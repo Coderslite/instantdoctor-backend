@@ -1,3 +1,4 @@
+import { env } from '../../src/config/env.js';
 import { describe, expect, it } from 'vitest';
 import * as t from '../../src/integrations/mail/templates.js';
 
@@ -69,5 +70,18 @@ describe('templates', () => {
     expect(mail.html).toMatch(/^<!DOCTYPE html>/);
     expect(mail.text.length).toBeGreaterThan(40);
     expect(mail.text.replaceAll(hostile, '')).not.toMatch(/<[a-z]/i);
+  });
+});
+
+describe('the branded frame on every email', () => {
+  it('has the logo header and company footer, with contact details only in the footer', () => {
+    const mail = t.welcome({ firstName: 'Ada' });
+    expect(mail.html).toContain(env.MAIL_LOGO_URL);
+    expect(mail.html).toContain('Licensed doctors · Video &amp; chat · 24/7');
+    expect(mail.html).toContain('Google Play');
+    expect(mail.html).toContain('All rights reserved.');
+    const header = mail.html.slice(0, mail.html.indexOf('Ada'));
+    expect(header).not.toContain(env.MAIL_REPLY_TO);
+    expect(mail.text).toContain('All rights reserved.');
   });
 });

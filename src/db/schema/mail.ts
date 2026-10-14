@@ -15,6 +15,9 @@ export const ADMIN_EMAIL_STATUSES = ['sending', 'sent', 'partial', 'failed'] as 
 export type AdminEmailStatus = (typeof ADMIN_EMAIL_STATUSES)[number];
 
 /** An official letter sent from the admin Mail centre, with its audience and delivery totals. */
+export const ADMIN_EMAIL_STYLES = ['letter', 'email'] as const;
+export type AdminEmailStyle = (typeof ADMIN_EMAIL_STYLES)[number];
+
 export const adminEmails = mysqlTable(
   'admin_emails',
   {
@@ -27,6 +30,8 @@ export const adminEmails = mysqlTable(
     body: longtext('body').notNull(),
     signatureName: varchar('signature_name', { length: 128 }).notNull(),
     signatureTitle: varchar('signature_title', { length: 128 }),
+    /** letter: official letter (ref, salutation, signature); email: plain branded email. */
+    style: mysqlEnum('style', ADMIN_EMAIL_STYLES).notNull().default('letter'),
     /** How recipients were chosen, for the history view. */
     audience: json('audience')
       .$type<{ segment: string | null; emails: number; users: number }>()
