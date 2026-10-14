@@ -30,7 +30,7 @@ export async function login(email: string, password: string, userAgent?: string)
   const [pharmacy] = await db.select().from(pharmacies).where(eq(pharmacies.email, email.toLowerCase())).limit(1);
   if (pharmacy?.passwordHash && await verifyPassword(password, pharmacy.passwordHash)) {
     if (!canUseWorkspace(pharmacy.status)) throw forbidden('This pharmacy account is not active');
-    return { pharmacy: { ...await publicProfile(pharmacy), accountRole: 'owner' as const }, session: pharmacySession(pharmacy.id, await openPortalSession('pharmacy', pharmacy.id, userAgent)) };
+    return { pharmacy: { ...await publicProfile(pharmacy), accountRole: 'owner' as const, mustChangePassword: pharmacy.mustChangePassword }, session: pharmacySession(pharmacy.id, await openPortalSession('pharmacy', pharmacy.id, userAgent)) };
   }
   const [staff] = await db.select().from(pharmacyStaff).where(eq(pharmacyStaff.email, email.toLowerCase())).limit(1);
   if (!staff?.passwordHash || !(await verifyPassword(password, staff.passwordHash))) throw unauthorized('Invalid email or password');
@@ -314,7 +314,7 @@ export async function updateStaff(
 export async function changePassword(pharmacyId: string, currentPassword: string, newPassword: string, userAgent?: string) {
   const [pharmacy] = await db.select().from(pharmacies).where(eq(pharmacies.id, pharmacyId)).limit(1);
   if (!pharmacy?.passwordHash || !(await verifyPassword(currentPassword, pharmacy.passwordHash))) throw unauthorized('Current password is incorrect');
-  await db.update(pharmacies).set({ passwordHash: await hashPassword(newPassword) }).where(eq(pharmacies.id, pharmacyId));
+  await db.update(pharmacies).set({ passwordHash: await hashPassword(newPassword), mustChangePassword: false }).where(eq(pharmacies.id, pharmacyId));
   await closeAllPortalSessions('pharmacy', pharmacyId);
   return { updated: true, session: pharmacySession(pharmacyId, await openPortalSession('pharmacy', pharmacyId, userAgent)) };
 }

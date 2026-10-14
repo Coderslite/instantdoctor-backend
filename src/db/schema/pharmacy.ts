@@ -10,7 +10,7 @@ import {
   varchar,
 } from 'drizzle-orm/mysql-core';
 import { coordinate, createdAt, id, money, timestamp, updatedAt } from '../columns.js';
-import { users } from './users.js';
+import { admins, users } from './users.js';
 
 export const pharmacies = mysqlTable(
   'pharmacies',
@@ -19,6 +19,8 @@ export const pharmacies = mysqlTable(
     name: varchar('name', { length: 255 }).notNull(),
     email: varchar('email', { length: 191 }).notNull(),
     passwordHash: varchar('password_hash', { length: 255 }),
+    /** Set for owners created from an application: they sign in with a temporary password and must replace it. */
+    mustChangePassword: boolean('must_change_password').notNull().default(false),
     phoneNumber: varchar('phone_number', { length: 32 }),
     address: varchar('address', { length: 512 }),
     latitude: coordinate('latitude'),
@@ -552,4 +554,41 @@ export const pharmacyPayoutRuns = mysqlTable(
     createdAt: createdAt(),
   },
   (t) => [uniqueIndex('pharmacy_payout_runs_key_uq').on(t.runKey)],
+);
+
+export const PHARMACY_APPLICATION_STATUSES = ['pending', 'approved', 'rejected'] as const;
+export type PharmacyApplicationStatus = (typeof PHARMACY_APPLICATION_STATUSES)[number];
+
+/** "Partner with us" from the website: reviewed by an admin, who creates the pharmacy on approval. */
+export const pharmacyApplications = mysqlTable(
+  'pharmacy_applications',
+  {
+    id: id('id').primaryKey(),
+    pharmacyName: varchar('pharmacy_name', { length: 255 }).notNull(),
+    contactName: varchar('contact_name', { length: 200 }).notNull(),
+    contactRole: varchar('contact_role', { length: 120 }),
+    email: varchar('email', { length: 191 }).notNull(),
+    phone: varchar('phone', { length: 32 }).notNull(),
+    address: varchar('address', { length: 512 }).notNull(),
+    city: varchar('city', { length: 120 }),
+    state: varchar('state', { length: 120 }),
+    /** PCN premises licence number, checked by the reviewer. */
+    licenceNumber: varchar('licence_number', { length: 80 }),
+    /** Rough band chosen on the form, e.g. "2 – 5". */
+    branches: varchar('branches', { length: 40 }),
+    offersDelivery: boolean('offers_delivery').notNull().default(false),
+    message: text('message'),
+    status: mysqlEnum('status', PHARMACY_APPLICATION_STATUSES).notNull().default('pending'),
+    reviewNote: text('review_note'),
+    reviewedBy: id('reviewed_by').references(() => admins.id, { onDelete: 'set null' }),
+    reviewedAt: timestamp('reviewed_at'),
+    /** The pharmacy created on approval. */
+    pharmacyId: id('pharmacy_id').references(() => pharmacies.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index('pharmacy_applications_status_idx').on(t.status, t.createdAt),
+    index('pharmacy_applications_email_idx').on(t.email),
+  ],
 );

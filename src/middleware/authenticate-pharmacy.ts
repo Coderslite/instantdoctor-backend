@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { pharmacyStaff } from '../db/schema/index.js';
+import { pharmacies, pharmacyStaff } from '../db/schema/index.js';
 import { forbidden, unauthorized } from '../lib/errors.js';
 import { verifyPharmacyAccessToken } from '../lib/tokens.js';
 
@@ -10,7 +10,15 @@ export async function authenticatePharmacy(req: Request, _res: Response, next: N
   if (!header?.startsWith('Bearer ')) throw unauthorized();
   const claims = verifyPharmacyAccessToken(header.slice('Bearer '.length).trim());
   if (!claims.staffId) {
-    req.pharmacyAuth = { pharmacyId: claims.sub, role: 'owner' };
+    const [owner] = await db
+      .select({ mustChangePassword: pharmacies.mustChangePassword })
+      .from(pharmacies)
+      .where(eq(pharmacies.id, claims.sub))
+      .limit(1);
+    req.pharmacyAuth = { pharmacyId: claims.sub, role: 'owner', mustChangePassword: owner?.mustChangePassword ?? false };
+    if (owner?.mustChangePassword && !temporaryPasswordAllows(req)) {
+      throw forbidden('Change your temporary password before using the workspace');
+    }
     next();
     return;
   }
@@ -33,11 +41,15 @@ export async function authenticatePharmacy(req: Request, _res: Response, next: N
     role,
     mustChangePassword: staff.mustChangePassword,
   };
-  if (staff.mustChangePassword && !(req.method === 'GET' && req.path === '/me') && !(req.method === 'PATCH' && req.path === '/password')) {
+  if (staff.mustChangePassword && !temporaryPasswordAllows(req)) {
     throw forbidden('Change your temporary password before using the workspace');
   }
   next();
 }
+
+/** With a temporary password only the profile and the password change are open. */
+const temporaryPasswordAllows = (req: Request) =>
+  (req.method === 'GET' && req.path === '/me') || (req.method === 'PATCH' && req.path === '/password');
 
 export function currentPharmacy(req: Request) {
   if (!req.pharmacyAuth) throw unauthorized();

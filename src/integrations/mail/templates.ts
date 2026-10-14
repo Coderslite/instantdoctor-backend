@@ -1143,3 +1143,138 @@ export function opsHmoApplication(input: {
   const text = plainText(['New HMO partnership application', ...rows.map(([label, value]) => `${label}: ${value}`), '', `Review: ${link}`]);
   return { subject: `[HMO application] ${input.organisation}`, html, text };
 }
+
+// ─── Pharmacy partnership applications ───────────────────────────────────────
+
+export function pharmacyApplicationReceived(input: { name: string; pharmacyName: string; reference: string }): RenderedMail {
+  const html = layout({
+    preheader: 'We have your pharmacy partnership application and will be in touch.',
+    body: [
+      heading('We received your application'),
+      paragraph(escapeHtml(greeting(firstWord(input.name)))),
+      paragraph(
+        `Thank you for applying to partner with ${escapeHtml(BRAND.name)} on behalf of <strong>${escapeHtml(input.pharmacyName)}</strong>. Our partnerships team will review your application, check your premises licence and may call to confirm a few details.`,
+      ),
+      detailsTable([
+        ['Application reference', input.reference],
+        ['Status', 'Under review'],
+      ]),
+      muted('Once your pharmacy is approved, we will email your sign-in details for the pharmacy portal.'),
+    ].join(''),
+  });
+  const text = plainText([
+    greeting(firstWord(input.name)),
+    '',
+    `Thank you for applying to partner with ${BRAND.name} on behalf of ${input.pharmacyName}. Our partnerships team will review your application, check your premises licence and may call to confirm a few details.`,
+    '',
+    `Application reference: ${input.reference}`,
+    '',
+    'Once your pharmacy is approved, we will email your sign-in details for the pharmacy portal.',
+  ]);
+  return { subject: `We received your ${BRAND.name} pharmacy application`, html, text };
+}
+
+export function pharmacyApplicationApproved(input: {
+  name: string;
+  pharmacyName: string;
+  email: string;
+  password: string;
+  portalUrl: string;
+}): RenderedMail {
+  const portal = input.portalUrl.replace(/\/$/, '');
+  const steps: Array<[string, string]> = [
+    [
+      'Sign in to the pharmacy portal',
+      `Go to <a href="${escapeHtml(portal)}" style="color:${BRAND.deep};font-weight:600;">${escapeHtml(portal.replace(/^https?:\/\//, ''))}</a> and sign in with the details below.`,
+    ],
+    ['Choose your own password', 'You will be asked to replace the temporary password the first time you sign in.'],
+    ['Set up your store', 'Add your opening hours, delivery fee, payout bank account and products. We switch your store on for patients once it is ready.'],
+  ];
+  const html = layout({
+    preheader: `${input.pharmacyName} is now an ${BRAND.name} partner pharmacy. Here are your sign-in details.`,
+    body: [
+      heading(`Welcome to ${BRAND.name}, ${input.pharmacyName}`),
+      paragraph(escapeHtml(greeting(firstWord(input.name)))),
+      paragraph('Good news: your pharmacy application has been <strong>approved</strong> and your pharmacy portal account is ready.'),
+      detailsTable([
+        ['Portal', portal.replace(/^https?:\/\//, '')],
+        ['Email', input.email],
+        ['Temporary password', input.password],
+      ]),
+      numberedSteps(steps),
+      button('Sign in to the pharmacy portal', portal),
+      notice('Keep this email private. The temporary password stops working once you choose your own.'),
+      muted('Questions about getting set up? Reply to this email and our partnerships team will help.'),
+    ].join(''),
+  });
+  const text = plainText([
+    greeting(firstWord(input.name)),
+    '',
+    `Your pharmacy application for ${input.pharmacyName} has been approved and your pharmacy portal account is ready.`,
+    '',
+    `Portal: ${portal}`,
+    `Email: ${input.email}`,
+    `Temporary password: ${input.password}`,
+    '',
+    'You will be asked to choose your own password the first time you sign in. Then set up your store: opening hours, delivery fee, payout bank account and products.',
+  ]);
+  return { subject: `Your ${BRAND.name} pharmacy portal is ready`, html, text };
+}
+
+export function pharmacyApplicationRejected(input: { name: string; pharmacyName: string; reason?: string | null }): RenderedMail {
+  const html = layout({
+    preheader: 'An update on your Instant Doctor pharmacy application.',
+    body: [
+      heading('An update on your application'),
+      paragraph(escapeHtml(greeting(firstWord(input.name)))),
+      paragraph(
+        `Thank you for your interest in partnering with ${escapeHtml(BRAND.name)}. After reviewing the application for <strong>${escapeHtml(input.pharmacyName)}</strong>, we are unable to approve it at this time.`,
+      ),
+      input.reason ? notice(`<strong>Reviewer note:</strong> ${escapeHtml(input.reason)}`) : '',
+      muted('If your circumstances change, reply to this email or apply again on our website.'),
+    ].join(''),
+  });
+  const text = plainText([
+    greeting(firstWord(input.name)),
+    '',
+    `Thank you for your interest in partnering with ${BRAND.name}. After reviewing the application for ${input.pharmacyName}, we are unable to approve it at this time.`,
+    input.reason ? `\nReviewer note: ${input.reason}` : null,
+    '',
+    'If your circumstances change, reply to this email or apply again on our website.',
+  ]);
+  return { subject: `Your ${BRAND.name} pharmacy application`, html, text };
+}
+
+export function opsPharmacyApplication(input: {
+  id: string;
+  pharmacyName: string;
+  contactName: string;
+  email: string;
+  phone: string;
+  location: string;
+  licenceNumber: string | null;
+  at: Date;
+}): RenderedMail {
+  const rows: Array<[string, string]> = [
+    ['Pharmacy', input.pharmacyName],
+    ['Contact', input.contactName],
+    ['Email', input.email],
+    ['Phone', input.phone],
+    ['Location', input.location],
+    ['Premises licence', input.licenceNumber ?? '—'],
+    ['Submitted', formatTime(input.at)],
+  ];
+  const link = `${env.ADMIN_URL.replace(/\/$/, '')}/pharmacy/applications/${input.id}`;
+  const html = layout({
+    preheader: `${input.pharmacyName} applied to partner with Instant Doctor`,
+    body: [
+      heading('New pharmacy application'),
+      paragraph('A pharmacy has applied to partner with Instant Doctor and is waiting for review.'),
+      detailsTable(rows),
+      button('Review application', link),
+    ].join(''),
+    footerNote: 'Internal notification for the Instant Doctor operations team.',
+  });
+  const text = plainText(['New pharmacy application', ...rows.map(([label, value]) => `${label}: ${value}`), '', `Review: ${link}`]);
+  return { subject: `[Pharmacy application] ${input.pharmacyName}`, html, text };
+}

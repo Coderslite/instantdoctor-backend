@@ -1,3 +1,7 @@
+import {
+  adminPharmacyApplicationsRouter,
+  pharmacyApplicationsRouter,
+} from './modules/pharmacy-applications/pharmacy-applications.routes.js';
 import { doctorEarningsRouter } from './modules/doctor-payouts/doctor-payouts.routes.js';
 import { Router } from 'express';
 import { anonymousRouter } from './modules/anonymous/anonymous.routes.js';
@@ -49,6 +53,7 @@ apiRouter.use('/admin/mail', mailCenterRouter);
 apiRouter.use('/admin/hmos', adminHmoRouter);
 apiRouter.use('/admin/hmo-link-requests', adminHmoLinkRequestsRouter);
 apiRouter.use('/admin/hmo-applications', adminHmoApplicationsRouter);
+apiRouter.use('/admin/pharmacy-applications', adminPharmacyApplicationsRouter);
 apiRouter.use('/admin/doctor-applications', adminDoctorApplicationsRouter);
 apiRouter.use('/admin', adminRouter);
 apiRouter.use('/pharmacy-portal', pharmacyPortalRouter);
@@ -63,6 +68,7 @@ apiRouter.use('/prescriptions', prescriptionsRouter);
 apiRouter.use('/payments', paymentsRouter);
 apiRouter.use('/subscriptions', subscriptionsRouter);
 apiRouter.use('/hmo-applications', hmoApplicationsRouter);
+apiRouter.use('/pharmacy-applications', pharmacyApplicationsRouter);
 apiRouter.use('/hmo', hmoMemberRouter);
 apiRouter.use('/wallet', walletRouter);
 apiRouter.use('/referrals', referralsRouter);

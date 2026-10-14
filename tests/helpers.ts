@@ -10,7 +10,7 @@ export const app = createApp();
 export const api = () => request(app);
 
 const TABLES = [
-  'idempotency_keys', 'doctor_ledger', 'doctor_payouts', 'doctor_payout_runs', 'hmo_activity', 'hmo_users', 'hmo_claims', 'hmo_capitation_lines', 'hmo_invoices', 'hmo_link_requests', 'hmo_enrollees', 'hmo_plan_rules', 'hmo_plans', 'hmos', 'admin_email_recipients', 'admin_emails', 'doctor_applications', 'hmo_applications', 'files', 'payment_webhook_events', 'payments', 'wallet_transactions', 'notifications',
+  'idempotency_keys', 'doctor_ledger', 'doctor_payouts', 'doctor_payout_runs', 'hmo_activity', 'hmo_users', 'hmo_claims', 'hmo_capitation_lines', 'hmo_invoices', 'hmo_link_requests', 'hmo_enrollees', 'hmo_plan_rules', 'hmo_plans', 'hmos', 'admin_email_recipients', 'admin_emails', 'doctor_applications', 'hmo_applications', 'pharmacy_applications', 'files', 'payment_webhook_events', 'payments', 'wallet_transactions', 'notifications',
   'referrals', 'reviews', 'prescription_items', 'prescriptions', 'appointment_messages', 'report_messages', 'reports',
   'appointments', 'appointment_packages', 'order_events', 'order_issues', 'pharmacy_reviews', 'pharmacy_ledger', 'pharmacy_payouts', 'pharmacy_payout_runs', 'pharmacy_bank_accounts', 'inventory_movements', 'pos_sale_items', 'pos_sales', 'purchase_order_items', 'purchase_orders', 'suppliers', 'order_items', 'orders', 'order_checkouts', 'products',
   'pharmacy_staff', 'pharmacies', 'lab_result_files', 'lab_results', 'care_summary_shares', 'family_subscriptions', 'vital_readings', 'care_plans',

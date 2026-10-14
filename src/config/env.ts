@@ -50,6 +50,8 @@ const schema = z
     ADMIN_URL: z.url().default('https://admin.instantdoctor.co'),
     /** HMO partner portal; linked from the email sent when an HMO application is approved. */
     HMO_PORTAL_URL: z.url().default('https://hmo.instantdoctor.co'),
+    /** Where approved pharmacies sign in (link in their welcome email). */
+    PHARMACY_PORTAL_URL: z.url().default('https://pharmacy.instantdoctor.co'),
     /** Store listings for the doctor app, sent to approved applicants. */
     DOCTOR_APP_PLAY_STORE_URL: z
       .url()

@@ -22,6 +22,7 @@ import * as family from '../modules/family/family.schemas.js';
 import { initializePaymentSchema } from '../modules/payments/payments.service.js';
 import * as pharmacy from '../modules/pharmacy/pharmacy.schemas.js';
 import * as pharmacyPortal from '../modules/pharmacy-portal/pharmacy-portal.schemas.js';
+import * as pharmacyApplications from '../modules/pharmacy-applications/pharmacy-applications.schemas.js';
 import * as adminSchemas from '../modules/admin/admin.schemas.js';
 import * as blogAnalytics from '../modules/blog/blog.analytics.js';
 import * as doctorApplications from '../modules/doctor-applications/doctor-applications.schemas.js';
@@ -1722,6 +1723,56 @@ op('post', '/hmo-applications', {
   body: hmo.applicationSchema,
   ok: { 201: z.object({ id: z.string(), reference: z.string(), status: z.literal('pending'), email: z.string() }) },
   errors: { 409: 'APPLICATION_EXISTS — an application from this email is under review' },
+});
+
+const PHARMACY_APPLICATION_FLOW =
+  'Pharmacies apply from the website. Approving creates the pharmacy in `onboarding` (not shown to patients) with an owner login; the owner is emailed a temporary password for the pharmacy portal and must replace it on first sign-in, then sets up the store. An admin switches the pharmacy to `active` when it is ready.';
+op('post', '/pharmacy-applications', {
+  tag: 'Pharmacy applications',
+  summary: 'Apply to partner as a pharmacy (website form)',
+  description: `${PHARMACY_APPLICATION_FLOW} Creates a pending application and emails the applicant a reference. Rate limited to 5 an hour.`,
+  auth: false,
+  body: pharmacyApplications.applicationSchema,
+  ok: { 201: z.object({ id: z.string(), reference: z.string(), status: z.literal('pending'), email: z.string() }) },
+  errors: { 409: 'APPLICATION_EXISTS (one under review from this email) | ALREADY_PARTNER (a pharmacy already uses this email)' },
+});
+op('get', '/admin/pharmacy-applications', {
+  tag: 'Pharmacy applications',
+  summary: 'Pharmacy partnership applications from the website',
+  description: PHARMACY_APPLICATION_FLOW,
+  query: pharmacyApplications.applicationsQuery,
+  ok: { 200: anyJson },
+});
+op('get', '/admin/pharmacy-applications/:id', {
+  tag: 'Pharmacy applications',
+  summary: 'One pharmacy application',
+  params: idParam,
+  ok: { 200: anyJson },
+  errors: { 404: 'NOT_FOUND' },
+});
+op('post', '/admin/pharmacy-applications/:id/approve', {
+  tag: 'Pharmacy applications',
+  summary: 'Approve: create the pharmacy (onboarding) and email the owner a temporary password',
+  description: `Admins only. ${PHARMACY_APPLICATION_FLOW} The temporary password is also returned once in \`owner\`.`,
+  params: idParam,
+  body: pharmacyApplications.approveApplicationSchema,
+  ok: {
+    200: z.object({
+      application: anyJson,
+      pharmacyId: z.string(),
+      owner: z.object({ email: z.string(), temporaryPassword: z.string() }),
+    }),
+  },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'APPLICATION_REVIEWED | EMAIL_TAKEN' },
+});
+op('post', '/admin/pharmacy-applications/:id/reject', {
+  tag: 'Pharmacy applications',
+  summary: 'Decline an application; the reason is emailed to the applicant',
+  description: 'Admins only.',
+  params: idParam,
+  body: pharmacyApplications.rejectApplicationSchema,
+  ok: { 200: anyJson },
+  errors: { 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'APPLICATION_REVIEWED' },
 });
 
 const HmoPortalUser = z.object({

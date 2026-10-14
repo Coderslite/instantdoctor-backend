@@ -92,6 +92,18 @@ export const mailer = {
   hmoAuthorizationRequested: (input: { to: string } & Parameters<typeof templates.hmoAuthorizationRequested>[0]) =>
     send(input.to, 'hmo-authorization-requested', templates.hmoAuthorizationRequested(input)),
 
+  pharmacyApplicationReceived: (input: { to: string } & Parameters<typeof templates.pharmacyApplicationReceived>[0]) =>
+    send(input.to, 'pharmacy-application-received', templates.pharmacyApplicationReceived(input)),
+
+  pharmacyApplicationApproved: (input: { to: string } & Parameters<typeof templates.pharmacyApplicationApproved>[0]) =>
+    send(input.to, 'pharmacy-application-approved', templates.pharmacyApplicationApproved(input)),
+
+  pharmacyApplicationRejected: (input: { to: string } & Parameters<typeof templates.pharmacyApplicationRejected>[0]) =>
+    send(input.to, 'pharmacy-application-rejected', templates.pharmacyApplicationRejected(input)),
+
+  opsPharmacyApplication: (input: Parameters<typeof templates.opsPharmacyApplication>[0]) =>
+    send(env.OPS_EMAIL, 'ops-pharmacy-application', templates.opsPharmacyApplication(input)),
+
   opsHmoApplication: (input: Parameters<typeof templates.opsHmoApplication>[0]) =>
     send(env.OPS_EMAIL, 'ops-hmo-application', templates.opsHmoApplication(input)),
 
