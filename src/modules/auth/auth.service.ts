@@ -53,6 +53,12 @@ export function describeDevice(client?: ClientInfo): string {
   return 'Unknown device';
 }
 
+/** The app the user signs in from, kept current so a switch from Android to iPhone shows up. */
+function appPlatform(client?: ClientInfo): { platform?: 'ios' | 'android' } {
+  const platform = client?.platform?.toLowerCase();
+  return platform === 'ios' || platform === 'android' ? { platform } : {};
+}
+
 function alertSignIn(user: Pick<UserRow, 'email' | 'firstName'>, client?: ClientInfo) {
   void mailer.signInAlert({
     to: user.email,
@@ -403,7 +409,7 @@ export async function login(email: string, password: string, client?: ClientInfo
       .set({ passwordHash: await hashPassword(password), legacyAuth: false })
       .where(eq(users.id, user.id));
   }
-  await db.update(users).set({ lastSeenAt: new Date() }).where(eq(users.id, user.id));
+  await db.update(users).set({ lastSeenAt: new Date(), ...appPlatform(client) }).where(eq(users.id, user.id));
   alertSignIn(user, client);
   return { user: await loadMe(user), session: await issueSession(user, client?.userAgent) };
 }
@@ -463,7 +469,7 @@ export async function socialSignIn(
     isNewUser = true;
   }
 
-  await db.update(users).set({ lastSeenAt: new Date() }).where(eq(users.id, user.id));
+  await db.update(users).set({ lastSeenAt: new Date(), ...appPlatform(client) }).where(eq(users.id, user.id));
   if (!isNewUser) alertSignIn(user, client);
   return { user: await loadMe(user), session: await issueSession(user, client?.userAgent), isNewUser };
 }

@@ -24,6 +24,9 @@ const daysAgo = (n: number) => new Date(Date.now() - n * DAY);
 const thisMonth = monthOf(new Date());
 const today = new Date(Date.now() + 3600_000).toISOString().slice(0, 10);
 const firstOfMonth = `${thisMonth}-01`;
+/** The visit is booked 3 hours ahead, which late in the evening is tomorrow in Lagos: bill up to the visit's day. */
+const visitDay = new Date(Date.now() + 4 * 3600_000).toISOString().slice(0, 10);
+const billedTo = visitDay.startsWith(thisMonth) ? visitDay : today;
 
 /** A capitation plan at ₦500 per member per month whose consultations are capitated (doctor paid ₦2,000). */
 async function capitationAgreement() {
@@ -85,7 +88,7 @@ describe('HMO capitation', () => {
     const [encounter] = await db.select().from(hmoClaims).where(eq(hmoClaims.appointmentId, appt!.id));
     expect(encounter).toMatchObject({ billing: 'capitation', hmoAmount: 0, patientAmount: 0 });
 
-    const invoice = await admin.post(`/hmos/${hmoId}/invoices`, { periodStart: firstOfMonth, periodEnd: today });
+    const invoice = await admin.post(`/hmos/${hmoId}/invoices`, { periodStart: firstOfMonth, periodEnd: billedTo });
     expect(invoice.status).toBe(201);
     expect(invoice.body).toMatchObject({ capitationAmount: 1_000, totalAmount: 1_000, claimCount: 1 });
     expect(invoice.body.capitation).toEqual([
@@ -96,10 +99,10 @@ describe('HMO capitation', () => {
     expect(counted.body.items.map((m: { enrolleeCode: string }) => m.enrolleeCode)).toEqual(['AVN-001', 'AVN-002']);
 
     // A month is billed once; cancelling the invoice frees it.
-    const again = await admin.post(`/hmos/${hmoId}/invoices`, { periodStart: firstOfMonth, periodEnd: today });
+    const again = await admin.post(`/hmos/${hmoId}/invoices`, { periodStart: firstOfMonth, periodEnd: billedTo });
     expect(again.body.error.code).toBe('NOTHING_TO_INVOICE');
     await admin.patch(`/hmos/${hmoId}/invoices/${invoice.body.id}`, { status: 'cancelled' });
-    const rebilled = await admin.post(`/hmos/${hmoId}/invoices`, { periodStart: firstOfMonth, periodEnd: today });
+    const rebilled = await admin.post(`/hmos/${hmoId}/invoices`, { periodStart: firstOfMonth, periodEnd: billedTo });
     expect(rebilled.status).toBe(201);
     expect(rebilled.body.capitationAmount).toBe(1_000);
 

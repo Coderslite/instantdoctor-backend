@@ -236,6 +236,8 @@ export async function getPatient(id: string) {
       emailVerifiedAt: users.emailVerifiedAt,
       createdAt: users.createdAt,
       hasPushToken: sql<boolean>`${users.fcmToken} is not null and ${users.fcmToken} <> ''`,
+      /** ios | android | web: the app they last signed in from. */
+      platform: users.platform,
       height: userMedicalProfiles.height,
       weight: userMedicalProfiles.weight,
       bloodGroup: userMedicalProfiles.bloodGroup,
