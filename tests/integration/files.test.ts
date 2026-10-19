@@ -5,8 +5,7 @@ import { appointmentMessages, appointments, doctorProfiles, files, labResults } 
 import { setStorageDriver, type StorageDriver } from '../../src/integrations/storage.js';
 import { newId } from '../../src/lib/ids.js';
 import { purgeAbandonedUploads } from '../../src/modules/files/files.service.js';
-import { signAdminAccessToken } from '../../src/lib/tokens.js';
-import { api, auth, createDoctor, createUser, inHours, resetDatabase } from '../helpers.js';
+import { adminToken, api, auth, createDoctor, createUser, inHours, resetDatabase } from '../helpers.js';
 
 afterAll(() => closeDatabase());
 
@@ -135,7 +134,7 @@ describe('blog image uploads', () => {
       readStart: async () => Buffer.alloc(0),
     };
     setStorageDriver(r2);
-    const token = signAdminAccessToken({ sub: newId(), role: 'admin' });
+    const token = await adminToken();
 
     const res = await api()
       .post('/api/v1/admin/blog/uploads')
@@ -304,7 +303,7 @@ describe('direct uploads', () => {
     const patient = await createUser();
     const labResultId = newId();
     await db.insert(labResults).values({ id: labResultId, userId: patient.id, status: 'pending' } as typeof labResults.$inferInsert);
-    const token = signAdminAccessToken({ sub: newId(), role: 'admin' });
+    const token = await adminToken();
     const { started, complete } = await directUpload(token, 'lab_result_report', PDF, 'application/pdf', '/admin');
     expect((await complete()).status).toBe(200);
 

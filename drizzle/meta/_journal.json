@@ -281,6 +281,13 @@
       "when": 1791730000000,
       "tag": "0039_pharmacy_application_location",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "5",
+      "when": 1791740000000,
+      "tag": "0040_admin_roles",
+      "breakpoints": true
     }
   ]
 }

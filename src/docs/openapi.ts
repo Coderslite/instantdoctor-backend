@@ -1748,6 +1748,42 @@ op('get', '/admin/family-care/:id', {
   ok: { 200: z.record(z.string(), z.unknown()) },
   errors: { 404: 'NOT_FOUND' },
 });
+const ADMIN_ACCESS =
+  'Admin roles: admin (everything, including the team), operations, finance, clinical, support and marketer. Each role can view or manage areas of the admin; every /admin request is checked against them (reads need view, writes need manage), and the role and status are read on each request. See `permissions` from GET /admin/me.';
+op('get', '/admin/me', { tag: 'Admin', summary: 'The signed-in admin, their role and what it can open', description: ADMIN_ACCESS, ok: { 200: z.record(z.string(), z.unknown()) } });
+op('patch', '/admin/me/password', {
+  tag: 'Admin',
+  summary: 'Change my password (required after a temporary one)',
+  description: 'Signs out other devices and returns a fresh session for this one.',
+  body: adminSchemas.adminPasswordSchema,
+  ok: { 200: z.record(z.string(), z.unknown()) },
+  errors: { 401: 'Current password is incorrect' },
+});
+op('get', '/admin/team', { tag: 'Admin', summary: 'Admin accounts and the roles available', description: `Admins only. ${ADMIN_ACCESS}`, ok: { 200: z.record(z.string(), z.unknown()) } });
+op('post', '/admin/team', {
+  tag: 'Admin',
+  summary: 'Add a colleague: emails them a temporary password',
+  description: 'Admins only. The password is also returned once in `temporaryPassword`; they must choose their own at first sign-in.',
+  body: adminSchemas.inviteAdminSchema,
+  ok: { 201: z.record(z.string(), z.unknown()) },
+  errors: { 409: 'EMAIL_TAKEN' },
+});
+op('patch', '/admin/team/:id', {
+  tag: 'Admin',
+  summary: 'Change a colleague’s name, role or status',
+  description: 'Admins only. Deactivating signs them out at once. You can’t change your own role or deactivate yourself, and one active Admin must always remain.',
+  params: idParam,
+  body: adminSchemas.updateAdminSchema,
+  ok: { 200: z.record(z.string(), z.unknown()) },
+  errors: { 400: 'Own account', 409: 'LAST_ADMIN' },
+});
+op('post', '/admin/team/:id/reset-password', {
+  tag: 'Admin',
+  summary: 'Email a colleague a new temporary password',
+  description: 'Admins only. Signs them out everywhere; they choose their own password at next sign-in.',
+  params: idParam,
+  ok: { 200: z.record(z.string(), z.unknown()) },
+});
 const PHARMACY_APPLICATION_FLOW =
   'Pharmacies apply from the website. Approving creates the pharmacy in `onboarding` (not shown to patients) with an owner login; the owner is emailed a temporary password for the pharmacy portal and must replace it on first sign-in, then sets up the store. An admin switches the pharmacy to `active` when it is ready.';
 op('post', '/pharmacy-applications', {

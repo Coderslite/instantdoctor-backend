@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
-import type { AdminRole, UserRole } from '../db/schema/users.js';
+import { ADMIN_ROLES, type AdminRole, type UserRole } from '../db/schema/users.js';
 import { unauthorized } from './errors.js';
 
 interface AccessClaims {
@@ -57,7 +57,7 @@ export function verifyAdminAccessToken(token: string): AdminAccessClaims {
       issuer: ADMIN_ISSUER,
       algorithms: ['HS256'],
     }) as jwt.JwtPayload;
-    if (!payload.sub || (payload.role !== 'admin' && payload.role !== 'marketer')) {
+    if (!payload.sub || !(ADMIN_ROLES as readonly string[]).includes(String(payload.role))) {
       throw unauthorized('Invalid admin access token');
     }
     return { sub: payload.sub, role: payload.role };

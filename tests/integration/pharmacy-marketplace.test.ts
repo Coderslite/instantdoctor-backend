@@ -3,9 +3,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { db } from '../../src/db/client.js';
 import { orderCheckouts, orderEvents, orderItems, orders, pharmacies, products, users } from '../../src/db/schema/index.js';
 import { newId } from '../../src/lib/ids.js';
-import { signAdminAccessToken, signPharmacyAccessToken } from '../../src/lib/tokens.js';
+import { signPharmacyAccessToken } from '../../src/lib/tokens.js';
 import { confirmCheckout } from '../../src/modules/payments/fulfillment.js';
-import { api, createUser, resetDatabase } from '../helpers.js';
+import { adminToken as newAdminToken, api, createUser, resetDatabase } from '../helpers.js';
 
 const portal = (pharmacyId: string) => {
   const token = signPharmacyAccessToken(pharmacyId);
@@ -103,7 +103,7 @@ describe('pharmacy marketplace', () => {
   it('uses the admin-configured surcharge in patient cart quotes', async () => {
     const { productId } = await createPharmacy();
     const user = await createUser();
-    const adminToken = signAdminAccessToken({ sub: newId(), role: 'admin' });
+    const adminToken = await newAdminToken();
     await api()
       .put('/api/v1/admin/commercial-fees')
       .set('Authorization', `Bearer ${adminToken}`)

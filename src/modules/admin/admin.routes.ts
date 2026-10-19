@@ -5,13 +5,13 @@ import { parse } from '../../lib/validation.js';
 import {
   authenticateAdmin,
   currentAdmin,
-  requireAdminRole,
 } from '../../middleware/authenticate-admin.js';
 import { refreshSchema } from '../auth/auth.schemas.js';
 import * as schemas from './admin.schemas.js';
 import * as service from './admin.service.js';
 import { revenueReport } from './revenue.service.js';
 import { getFamilyCare, listFamilyCare } from './family-care.service.js';
+import * as team from './team.service.js';
 import * as payoutSchemas from '../payouts/payouts.schemas.js';
 import * as payouts from '../payouts/payouts.service.js';
 import { savePayoutSettings } from '../payouts/payouts.settings.js';
@@ -63,12 +63,23 @@ adminRouter.post('/auth/logout', async (req, res) => {
 });
 
 adminRouter.use(authenticateAdmin);
-adminRouter.get('/dashboard', async (_req, res) => res.json(await service.dashboard()));
+adminRouter.get('/me', async (req, res) => res.json(await team.me(currentAdmin(req).adminId)));
+adminRouter.patch('/me/password', async (req, res) => {
+  const input = parse(schemas.adminPasswordSchema, req.body);
+  res.json(await team.changeOwnPassword(currentAdmin(req).adminId, input.currentPassword, input.newPassword, req.get('user-agent')));
+});
+adminRouter.get('/team', async (_req, res) => res.json(await team.listTeam()));
+adminRouter.post('/team', async (req, res) => res.status(201).json(await team.invite(currentAdmin(req).adminId, parse(schemas.inviteAdminSchema, req.body))));
+adminRouter.patch('/team/:id', async (req, res) =>
+  res.json(await team.update(currentAdmin(req).adminId, String(req.params.id), parse(schemas.updateAdminSchema, req.body))),
+);
+adminRouter.post('/team/:id/reset-password', async (req, res) => res.json(await team.resetPassword(currentAdmin(req).adminId, String(req.params.id))));
+adminRouter.get('/dashboard', async (req, res) => res.json(await service.dashboard(currentAdmin(req).role)));
 adminRouter.get('/revenue', async (req, res) => res.json(await revenueReport(parse(schemas.revenueQuery, req.query))));
 adminRouter.get('/family-care', async (req, res) => res.json(await listFamilyCare(parse(schemas.familyCareQuery, req.query))));
 adminRouter.get('/family-care/:id', async (req, res) => res.json(await getFamilyCare(String(req.params.id))));
 adminRouter.get('/commercial-fees', async (_req, res) => res.json({ fees: await service.getCommercialFees() }));
-adminRouter.put('/commercial-fees', requireAdminRole('admin'), async (req, res) =>
+adminRouter.put('/commercial-fees', async (req, res) =>
   res.json(await service.updateCommercialFees(parse(schemas.commercialFeesSchema, req.body))),
 );
 adminRouter.get('/patients', async (req, res) =>
@@ -77,7 +88,7 @@ adminRouter.get('/patients', async (req, res) =>
 adminRouter.get('/patients/:id', async (req, res) =>
   res.json(await service.getPatient(String(req.params.id))),
 );
-adminRouter.patch('/patients/:id', requireAdminRole('admin'), async (req, res) =>
+adminRouter.patch('/patients/:id', async (req, res) =>
   res.json(
     await service.updatePatient(
       String(req.params.id),
@@ -85,11 +96,11 @@ adminRouter.patch('/patients/:id', requireAdminRole('admin'), async (req, res) =
     ),
   ),
 );
-adminRouter.post('/patients/:id/email', requireAdminRole('admin'), async (req, res) => {
+adminRouter.post('/patients/:id/email', async (req, res) => {
   const { subject, message } = parse(schemas.patientEmailSchema, req.body);
   res.json(await service.emailPatient(String(req.params.id), subject, message));
 });
-adminRouter.post('/patients/:id/push', requireAdminRole('admin'), async (req, res) => {
+adminRouter.post('/patients/:id/push', async (req, res) => {
   const { title, message } = parse(schemas.patientPushSchema, req.body);
   res.json(await service.pushPatient(String(req.params.id), title, message));
 });
@@ -99,7 +110,7 @@ adminRouter.get('/doctors', async (req, res) =>
 adminRouter.get('/doctors/:id', async (req, res) =>
   res.json(await service.getDoctor(String(req.params.id))),
 );
-adminRouter.patch('/doctors/:id', requireAdminRole('admin'), async (req, res) => {
+adminRouter.patch('/doctors/:id', async (req, res) => {
   const { certificateFileId, ...input } = parse(schemas.updateDoctorSchema, req.body);
   const certificateUrl = certificateFileId
     ? await attachFile({ kind: 'admin', id: currentAdmin(req).adminId }, certificateFileId, [
@@ -108,28 +119,28 @@ adminRouter.patch('/doctors/:id', requireAdminRole('admin'), async (req, res) =>
     : input.certificateUrl;
   res.json(await service.updateDoctor(String(req.params.id), { ...input, certificateUrl }));
 });
-adminRouter.patch('/users/:id/status', requireAdminRole('admin'), async (req, res) => {
+adminRouter.patch('/users/:id/status', async (req, res) => {
   const { status } = parse(schemas.userStatusSchema, req.body);
   res.json(await service.setUserStatus(String(req.params.id), status));
 });
 adminRouter.get('/appointments', async (req, res) =>
   res.json(await service.listAppointments(parse(schemas.adminListQuery, req.query))),
 );
-adminRouter.post('/appointments', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/appointments', async (req, res) =>
   res
     .status(201)
     .json(await service.createAppointment(parse(schemas.createAppointmentSchema, req.body))),
 );
 // ─── Consultations that couldn't close automatically ───
 adminRouter.get('/appointments/review', async (_req, res) => res.json({ items: await lifecycle.listForReview() }));
-adminRouter.post('/appointments/:id/review', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/appointments/:id/review', async (req, res) =>
   res.json(await lifecycle.resolveReview(String(req.params.id), parse(reviewDecisionSchema, req.body), await payouts.adminDisplayName(currentAdmin(req).adminId))),
 );
 
 adminRouter.get('/appointments/:id', async (req, res) =>
   res.json(await service.getAppointment(String(req.params.id))),
 );
-adminRouter.patch('/appointments/:id', requireAdminRole('admin'), async (req, res) =>
+adminRouter.patch('/appointments/:id', async (req, res) =>
   res.json(
     await service.updateAppointment(
       String(req.params.id),
@@ -137,21 +148,21 @@ adminRouter.patch('/appointments/:id', requireAdminRole('admin'), async (req, re
     ),
   ),
 );
-adminRouter.patch('/appointments/:id/status', requireAdminRole('admin'), async (req, res) => {
+adminRouter.patch('/appointments/:id/status', async (req, res) => {
   const { status } = parse(schemas.appointmentStatusSchema, req.body);
   res.json(await service.setAppointmentStatus(String(req.params.id), status));
 });
 adminRouter.get('/appointment-packages', async (_req, res) =>
   res.json({ items: await service.listAppointmentPackages() }),
 );
-adminRouter.post('/appointment-packages', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/appointment-packages', async (req, res) =>
   res
     .status(201)
     .json(
       await service.createAppointmentPackage(parse(schemas.appointmentPackageSchema, req.body)),
     ),
 );
-adminRouter.patch('/appointment-packages/:id', requireAdminRole('admin'), async (req, res) =>
+adminRouter.patch('/appointment-packages/:id', async (req, res) =>
   res.json(
     await service.updateAppointmentPackage(
       String(req.params.id),
@@ -162,13 +173,13 @@ adminRouter.patch('/appointment-packages/:id', requireAdminRole('admin'), async 
 adminRouter.get('/pharmacies', async (req, res) =>
   res.json(await service.listPharmacies(parse(schemas.adminListQuery, req.query))),
 );
-adminRouter.post('/pharmacies', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/pharmacies', async (req, res) =>
   res.status(201).json(await service.createPharmacy(parse(schemas.pharmacySchema, req.body))),
 );
 adminRouter.get('/pharmacies/:id', async (req, res) =>
   res.json(await service.getAdminPharmacy(String(req.params.id))),
 );
-adminRouter.patch('/pharmacies/:id', requireAdminRole('admin'), async (req, res) =>
+adminRouter.patch('/pharmacies/:id', async (req, res) =>
   res.json(
     await service.updatePharmacy(
       String(req.params.id),
@@ -176,10 +187,10 @@ adminRouter.patch('/pharmacies/:id', requireAdminRole('admin'), async (req, res)
     ),
   ),
 );
-adminRouter.post('/products', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/products', async (req, res) =>
   res.status(201).json(await service.createProduct(parse(schemas.productSchema, req.body))),
 );
-adminRouter.patch('/products/:id', requireAdminRole('admin'), async (req, res) =>
+adminRouter.patch('/products/:id', async (req, res) =>
   res.json(
     await service.updateProduct(
       String(req.params.id),
@@ -187,19 +198,19 @@ adminRouter.patch('/products/:id', requireAdminRole('admin'), async (req, res) =
     ),
   ),
 );
-adminRouter.post('/pharmacies/:id/products/import', requireAdminRole('admin'), async (req, res) => {
+adminRouter.post('/pharmacies/:id/products/import', async (req, res) => {
   const { products } = parse(schemas.importProductsSchema, req.body);
   res.json(await service.importProducts(String(req.params.id), products));
 });
 adminRouter.get('/product-categories', async (_req, res) =>
   res.json({ items: await service.listProductCategories() }),
 );
-adminRouter.post('/product-categories', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/product-categories', async (req, res) =>
   res
     .status(201)
     .json(await service.createProductCategory(parse(schemas.productCategorySchema, req.body))),
 );
-adminRouter.patch('/product-categories/:id', requireAdminRole('admin'), async (req, res) =>
+adminRouter.patch('/product-categories/:id', async (req, res) =>
   res.json(
     await service.updateProductCategory(
       String(req.params.id),
@@ -207,13 +218,13 @@ adminRouter.patch('/product-categories/:id', requireAdminRole('admin'), async (r
     ),
   ),
 );
-adminRouter.delete('/product-categories/:id', requireAdminRole('admin'), async (req, res) =>
+adminRouter.delete('/product-categories/:id', async (req, res) =>
   res.json(await service.deleteProductCategory(String(req.params.id))),
 );
 adminRouter.get('/orders', async (req, res) =>
   res.json(await service.listOrders(parse(schemas.adminListQuery, req.query))),
 );
-adminRouter.patch('/orders/:id/status', requireAdminRole('admin'), async (req, res) => {
+adminRouter.patch('/orders/:id/status', async (req, res) => {
   const { status } = parse(schemas.orderStatusSchema, req.body);
   res.json(await service.setOrderStatus(String(req.params.id), status));
 });
@@ -223,7 +234,7 @@ adminRouter.get('/lab-results', async (req, res) =>
 adminRouter.get('/lab-results/:id', async (req, res) =>
   res.json(await service.getLabResult(String(req.params.id))),
 );
-adminRouter.patch('/lab-results/:id/status', requireAdminRole('admin'), async (req, res) => {
+adminRouter.patch('/lab-results/:id/status', async (req, res) => {
   res.json(
     await service.updateLabResult(
       String(req.params.id),
@@ -232,7 +243,7 @@ adminRouter.patch('/lab-results/:id/status', requireAdminRole('admin'), async (r
   );
 });
 /** Publishes an interpreted result uploaded directly to storage (see /admin/uploads/presign). */
-adminRouter.post('/lab-results/:id/result', requireAdminRole('admin'), async (req, res) => {
+adminRouter.post('/lab-results/:id/result', async (req, res) => {
   const admin = { kind: 'admin' as const, id: currentAdmin(req).adminId };
   const { fileId, ...fields } = req.body as Record<string, unknown>;
   const resultUrl = await attachFile(admin, parse(fileIdSchema, { fileId }).fileId, [
@@ -249,7 +260,6 @@ adminRouter.post('/lab-results/:id/result', requireAdminRole('admin'), async (re
 });
 adminRouter.post(
   '/lab-results/:id/upload',
-  requireAdminRole('admin'),
   singleFile,
   async (req, res) => {
     const admin = { kind: 'admin' as const, id: currentAdmin(req).adminId };
@@ -286,7 +296,7 @@ adminRouter.post('/uploads/:id/complete', async (req, res) => {
 adminRouter.get('/payments', async (req, res) =>
   res.json(await service.listPayments(parse(schemas.adminListQuery, req.query))),
 );
-adminRouter.patch('/payments/:id/status', requireAdminRole('admin'), async (req, res) => {
+adminRouter.patch('/payments/:id/status', async (req, res) => {
   const { status, failureReason } = parse(schemas.paymentStatusSchema, req.body);
   res.json(await service.setPaymentStatus(String(req.params.id), status, failureReason));
 });
@@ -300,22 +310,22 @@ adminRouter.get('/payouts', async (req, res) =>
 adminRouter.get('/payouts/balances', async (req, res) =>
   res.json(await payouts.pharmacyBalances(parse(payoutSchemas.balancesListSchema, req.query))),
 );
-adminRouter.get('/payouts/gateway-balance', requireAdminRole('admin'), async (_req, res) =>
+adminRouter.get('/payouts/gateway-balance', async (_req, res) =>
   res.json({ balance: await payouts.gatewayBalance() }),
 );
-adminRouter.put('/payouts/settings', requireAdminRole('admin'), async (req, res) =>
+adminRouter.put('/payouts/settings', async (req, res) =>
   res.json(await savePayoutSettings(parse(payoutSchemas.settingsUpdateSchema, req.body))),
 );
-adminRouter.post('/payouts/run-weekly', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/payouts/run-weekly', async (req, res) =>
   res.json(await payouts.runWeeklyPayouts({ manual: await actingAdmin(req) })),
 );
-adminRouter.post('/payouts/approve', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/payouts/approve', async (req, res) =>
   res.json(await payouts.approvePayouts(parse(payoutSchemas.approveManySchema, req.body).ids, await actingAdmin(req))),
 );
-adminRouter.post('/payouts/:id/approve', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/payouts/:id/approve', async (req, res) =>
   res.json(await payouts.approvePayout(String(req.params.id), await actingAdmin(req))),
 );
-adminRouter.post('/payouts/:id/reject', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/payouts/:id/reject', async (req, res) =>
   res.json(await payouts.rejectPayout(String(req.params.id), parse(payoutSchemas.rejectSchema, req.body).reason, await actingAdmin(req))),
 );
 // ─── Doctor payouts ───
@@ -326,16 +336,16 @@ adminRouter.get('/doctor-payouts', async (req, res) =>
 adminRouter.get('/doctor-payouts/balances', async (req, res) =>
   res.json(await doctorPayouts.doctorBalances(parse(doctorPayoutSchemas.balancesListSchema, req.query))),
 );
-adminRouter.put('/doctor-payouts/settings', requireAdminRole('admin'), async (req, res) =>
+adminRouter.put('/doctor-payouts/settings', async (req, res) =>
   res.json(await saveDoctorPayoutSettings(parse(payoutSchemas.settingsUpdateSchema, req.body))),
 );
-adminRouter.post('/doctor-payouts/run-weekly', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/doctor-payouts/run-weekly', async (req, res) =>
   res.json(await doctorPayouts.runWeeklyPayouts({ manual: await actingAdmin(req) })),
 );
-adminRouter.post('/doctor-payouts/approve', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/doctor-payouts/approve', async (req, res) =>
   res.json(await doctorPayouts.approvePayouts(parse(payoutSchemas.approveManySchema, req.body).ids, await actingAdmin(req))),
 );
-adminRouter.post('/doctor-payouts/:id/approve', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/doctor-payouts/:id/approve', async (req, res) =>
   res.json(
     await doctorPayouts.approvePayout(
       String(req.params.id),
@@ -344,7 +354,7 @@ adminRouter.post('/doctor-payouts/:id/approve', requireAdminRole('admin'), async
     ),
   ),
 );
-adminRouter.post('/doctor-payouts/:id/reject', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/doctor-payouts/:id/reject', async (req, res) =>
   res.json(await doctorPayouts.rejectPayout(String(req.params.id), parse(payoutSchemas.rejectSchema, req.body).reason, await actingAdmin(req))),
 );
 adminRouter.get('/doctors/:id/ledger', async (req, res) =>
@@ -353,12 +363,12 @@ adminRouter.get('/doctors/:id/ledger', async (req, res) =>
     summary: await doctorPayouts.summary(String(req.params.id)),
   }),
 );
-adminRouter.post('/doctors/:id/ledger-adjustments', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/doctors/:id/ledger-adjustments', async (req, res) =>
   res.json(await doctorPayouts.adjustBalance(String(req.params.id), parse(doctorPayoutSchemas.adjustmentSchema, req.body), await actingAdmin(req))),
 );
 adminRouter.get('/pharmacies/:id/ledger', async (req, res) =>
   res.json({ ...(await payouts.ledger(String(req.params.id), parse(payoutSchemas.pageSchema, req.query))), summary: await payouts.summary(String(req.params.id)) }),
 );
-adminRouter.post('/pharmacies/:id/ledger-adjustments', requireAdminRole('admin'), async (req, res) =>
+adminRouter.post('/pharmacies/:id/ledger-adjustments', async (req, res) =>
   res.json(await payouts.adjustBalance(String(req.params.id), parse(payoutSchemas.adjustmentSchema, req.body), await actingAdmin(req))),
 );

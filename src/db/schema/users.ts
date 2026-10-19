@@ -142,7 +142,8 @@ export const savedLocations = mysqlTable(
   (t) => [index('saved_locations_user_idx').on(t.userId)],
 );
 
-export const ADMIN_ROLES = ['admin', 'marketer'] as const;
+/** What each role may do is in src/lib/admin-access.ts. */
+export const ADMIN_ROLES = ['admin', 'operations', 'finance', 'clinical', 'support', 'marketer'] as const;
 export type AdminRole = (typeof ADMIN_ROLES)[number];
 
 export const admins = mysqlTable(
@@ -153,6 +154,11 @@ export const admins = mysqlTable(
     email: varchar('email', { length: 191 }).notNull(),
     passwordHash: varchar('password_hash', { length: 255 }),
     role: mysqlEnum('role', ADMIN_ROLES).notNull().default('admin'),
+    /** Inactive accounts can't sign in, and their sessions end at once. */
+    status: mysqlEnum('status', ['active', 'inactive']).notNull().default('active'),
+    /** Set for invited colleagues: they sign in with a temporary password and must choose their own. */
+    mustChangePassword: boolean('must_change_password').notNull().default(false),
+    lastLoginAt: timestamp('last_login_at'),
     createdAt: createdAt(),
   },
   (t) => [uniqueIndex('admins_email_uq').on(t.email)],

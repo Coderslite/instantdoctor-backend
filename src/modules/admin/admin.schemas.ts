@@ -90,3 +90,17 @@ export const familyCareQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
   offset: z.coerce.number().int().min(0).default(0),
 });
+
+const adminRole = z.enum(['admin', 'operations', 'finance', 'clinical', 'support', 'marketer']);
+export const inviteAdminSchema = z.object({
+  name: z.string().trim().min(2).max(128),
+  email: z.email().trim().toLowerCase().max(191),
+  role: adminRole,
+});
+export const updateAdminSchema = z
+  .object({ name: z.string().trim().min(2).max(128).optional(), role: adminRole.optional(), status: z.enum(['active', 'inactive']).optional() })
+  .refine((v) => Object.keys(v).length > 0, 'Nothing to change');
+export const adminPasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(128),
+  newPassword: z.string().min(10, 'Use at least 10 characters').max(128),
+});

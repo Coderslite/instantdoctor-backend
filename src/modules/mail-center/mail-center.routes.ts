@@ -5,7 +5,6 @@ import { parse } from '../../lib/validation.js';
 import {
   authenticateAdmin,
   currentAdmin,
-  requireAdminRole,
 } from '../../middleware/authenticate-admin.js';
 import * as schemas from './mail-center.schemas.js';
 import * as service from './mail-center.service.js';
@@ -13,7 +12,6 @@ import * as service from './mail-center.service.js';
 /** Official letters from the admin, sent as contact@ on the Instant Doctor letterhead. Mounted at /admin/mail. */
 export const mailCenterRouter = Router();
 mailCenterRouter.use(authenticateAdmin);
-const canSend = requireAdminRole('admin', 'marketer');
 // Guards against a double-clicked or scripted send mailing everyone repeatedly.
 const sendLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
@@ -29,10 +27,10 @@ mailCenterRouter.post('/preview', async (req, res) =>
 mailCenterRouter.get('/audience', async (req, res) =>
   res.json(await service.audienceSize(parse(schemas.audienceQuery, req.query).segment)),
 );
-mailCenterRouter.post('/test', canSend, async (req, res) =>
+mailCenterRouter.post('/test', async (req, res) =>
   res.json(await service.sendTest(currentAdmin(req).adminId, parse(schemas.testSchema, req.body))),
 );
-mailCenterRouter.post('/', canSend, sendLimiter, async (req, res) =>
+mailCenterRouter.post('/', sendLimiter, async (req, res) =>
   res
     .status(202)
     .json(await service.send(currentAdmin(req).adminId, parse(schemas.sendSchema, req.body))),

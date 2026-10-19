@@ -1,3 +1,5 @@
+import { can, permissionsFor } from '../../lib/admin-access.js';
+import type { AdminRole } from '../../db/schema/users.js';
 import { round2 } from '../../lib/money.js';
 import { inNaira, nairaRates, revenueReport } from './revenue.service.js';
 import { env } from '../../config/env.js';
@@ -38,7 +40,7 @@ import {
 import { isListedCurrency } from '../settings/settings.service.js';
 import { usdRate } from '../../integrations/exchange-rates.js';
 import { hashPassword, verifyPassword } from '../../lib/crypto.js';
-import { badRequest, notFound, unauthorized } from '../../lib/errors.js';
+import { badRequest, forbidden, notFound, unauthorized } from '../../lib/errors.js';
 import { signAdminAccessToken } from '../../lib/tokens.js';
 import {
   closeAllPortalSessions,
@@ -90,8 +92,10 @@ export async function login(email: string, password: string, userAgent?: string)
     .limit(1);
   if (!admin?.passwordHash || !(await verifyPassword(password, admin.passwordHash)))
     throw unauthorized('Invalid email or password');
+  if (admin.status !== 'active') throw forbidden('This admin account has been deactivated. Ask an Admin to restore it.');
+  await db.update(admins).set({ lastLoginAt: new Date() }).where(eq(admins.id, admin.id));
   return {
-    admin: { id: admin.id, name: admin.name, email: admin.email, role: admin.role },
+    admin: { id: admin.id, name: admin.name, email: admin.email, role: admin.role, mustChangePassword: admin.mustChangePassword, permissions: permissionsFor(admin.role) },
     session: adminSession(admin, await openPortalSession('admin', admin.id, userAgent)),
   };
 }
@@ -99,11 +103,11 @@ export async function login(email: string, password: string, userAgent?: string)
 export async function refreshSession(refreshToken: string, userAgent?: string) {
   const rotated = await rotatePortalSession('admin', refreshToken, userAgent);
   const [admin] = await db
-    .select({ id: admins.id, role: admins.role })
+    .select({ id: admins.id, role: admins.role, status: admins.status })
     .from(admins)
     .where(eq(admins.id, rotated.subjectId))
     .limit(1);
-  if (!admin) {
+  if (!admin || admin.status !== 'active') {
     await closeAllPortalSessions('admin', rotated.subjectId);
     throw unauthorized('Your session has ended. Please sign in again.');
   }
@@ -140,7 +144,7 @@ async function moneyCards(escrow: { currency: string | null; doctorEscrow: strin
   };
 }
 
-export async function dashboard() {
+export async function dashboard(role: AdminRole = 'admin') {
   const monthStart = new Date();
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
@@ -188,7 +192,8 @@ export async function dashboard() {
     completedAppointments: completedCount?.value ?? 0,
     cancelledAppointments: cancelledCount?.value ?? 0,
     monthlyAppointments,
-    ...(await moneyCards(escrow)),
+    // Money is for roles that can see finance.
+    ...(can(role, 'finance') ? await moneyCards(escrow) : {}),
   };
 }
 

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { isTest } from '../../config/env.js';
 import { parse } from '../../lib/validation.js';
-import { authenticateAdmin, currentAdmin, requireAdminRole } from '../../middleware/authenticate-admin.js';
+import { authenticateAdmin, currentAdmin } from '../../middleware/authenticate-admin.js';
 import { singleFile } from '../files/upload-middleware.js';
 import * as schemas from './doctor-applications.schemas.js';
 import * as service from './doctor-applications.service.js';
@@ -40,12 +40,12 @@ adminDoctorApplicationsRouter.get('/:id', async (req, res) => {
   res.json(await service.get(String(req.params.id)));
 });
 
-adminDoctorApplicationsRouter.post('/:id/approve', requireAdminRole('admin'), async (req, res) => {
+adminDoctorApplicationsRouter.post('/:id/approve', async (req, res) => {
   const { note } = parse(schemas.approveApplicationSchema, req.body ?? {});
   res.json(await service.approve(String(req.params.id), currentAdmin(req).adminId, note));
 });
 
-adminDoctorApplicationsRouter.post('/:id/reject', requireAdminRole('admin'), async (req, res) => {
+adminDoctorApplicationsRouter.post('/:id/reject', async (req, res) => {
   const { reason } = parse(schemas.rejectApplicationSchema, req.body);
   res.json(await service.reject(String(req.params.id), currentAdmin(req).adminId, reason));
 });

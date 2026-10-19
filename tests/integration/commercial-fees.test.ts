@@ -1,14 +1,12 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { closeDatabase } from '../../src/db/client.js';
-import { newId } from '../../src/lib/ids.js';
-import { signAdminAccessToken } from '../../src/lib/tokens.js';
-import { api, resetDatabase } from '../helpers.js';
+import { adminToken, api, resetDatabase } from '../helpers.js';
 
 afterAll(() => closeDatabase());
 beforeEach(resetDatabase);
 
-const adminAuth = (role: 'admin' | 'marketer' = 'admin') => ({
-  Authorization: `Bearer ${signAdminAccessToken({ sub: newId(), role })}`,
+const adminAuth = async (role: 'admin' | 'marketer' | 'finance' = 'admin') => ({
+  Authorization: `Bearer ${await adminToken(role)}`,
 });
 
 const fees = {
@@ -21,7 +19,7 @@ const fees = {
 
 describe('admin commercial fee policy', () => {
   it('returns the legacy policy until an administrator saves rates', async () => {
-    const res = await api().get('/api/v1/admin/commercial-fees').set(adminAuth());
+    const res = await api().get('/api/v1/admin/commercial-fees').set(await adminAuth());
     expect(res.status).toBe(200);
     expect(res.body.fees).toEqual(fees);
   });
@@ -29,12 +27,12 @@ describe('admin commercial fee policy', () => {
   it('requires an admin role to update rates and rejects invalid splits', async () => {
     await api()
       .put('/api/v1/admin/commercial-fees')
-      .set(adminAuth('marketer'))
+      .set(await adminAuth('marketer'))
       .send(fees)
       .expect(403);
 
     const invalid = { ...fees, gatewayFeePercent: 20, consultationPlatformPercent: 81 };
-    await api().put('/api/v1/admin/commercial-fees').set(adminAuth()).send(invalid).expect(400);
+    await api().put('/api/v1/admin/commercial-fees').set(await adminAuth()).send(invalid).expect(400);
   });
 
   it('persists and returns the complete updated policy', async () => {
@@ -45,10 +43,10 @@ describe('admin commercial fee policy', () => {
       pharmacyPlatformPercent: 7.5,
       referralCommissionPercent: 12,
     };
-    const res = await api().put('/api/v1/admin/commercial-fees').set(adminAuth()).send(updated);
+    const res = await api().put('/api/v1/admin/commercial-fees').set(await adminAuth()).send(updated);
     expect(res.status).toBe(200);
     expect(res.body.fees).toEqual(updated);
-    const loaded = await api().get('/api/v1/admin/commercial-fees').set(adminAuth());
+    const loaded = await api().get('/api/v1/admin/commercial-fees').set(await adminAuth());
     expect(loaded.body.fees).toEqual(updated);
   });
 });

@@ -6,7 +6,6 @@ import { parse } from '../../lib/validation.js';
 import {
   authenticateAdmin,
   currentAdmin,
-  requireAdminRole,
 } from '../../middleware/authenticate-admin.js';
 import { uploadFile } from '../files/files.service.js';
 import { singleFile } from '../files/upload-middleware.js';
@@ -96,7 +95,6 @@ adminBlogRouter.use((req, res, next) => {
   if (req.method !== 'GET') res.on('finish', () => res.statusCode < 400 && refreshWebsiteBlog());
   next();
 });
-const canWrite = requireAdminRole('admin', 'marketer');
 
 adminBlogRouter.get('/analytics', async (req, res) =>
   res.json(await analytics.analytics(parse(analytics.analyticsQuery, req.query))),
@@ -107,25 +105,25 @@ adminBlogRouter.get('/posts', async (req, res) =>
 adminBlogRouter.get('/posts/:id', async (req, res) =>
   res.json(await service.adminGetPost(String(req.params.id))),
 );
-adminBlogRouter.post('/posts', canWrite, async (req, res) =>
+adminBlogRouter.post('/posts', async (req, res) =>
   res.status(201).json(await service.createPost(parse(schemas.postSchema, req.body))),
 );
-adminBlogRouter.patch('/posts/:id', canWrite, async (req, res) =>
+adminBlogRouter.patch('/posts/:id', async (req, res) =>
   res.json(
     await service.updatePost(String(req.params.id), parse(schemas.updatePostSchema, req.body)),
   ),
 );
-adminBlogRouter.delete('/posts/:id', canWrite, async (req, res) =>
+adminBlogRouter.delete('/posts/:id', async (req, res) =>
   res.json(await service.deletePost(String(req.params.id))),
 );
 
 adminBlogRouter.get('/categories', async (_req, res) =>
   res.json({ items: await service.adminListCategories() }),
 );
-adminBlogRouter.post('/categories', canWrite, async (req, res) =>
+adminBlogRouter.post('/categories', async (req, res) =>
   res.status(201).json(await service.createCategory(parse(schemas.categorySchema, req.body))),
 );
-adminBlogRouter.patch('/categories/:id', canWrite, async (req, res) =>
+adminBlogRouter.patch('/categories/:id', async (req, res) =>
   res.json(
     await service.updateCategory(
       String(req.params.id),
@@ -133,27 +131,27 @@ adminBlogRouter.patch('/categories/:id', canWrite, async (req, res) =>
     ),
   ),
 );
-adminBlogRouter.delete('/categories/:id', canWrite, async (req, res) =>
+adminBlogRouter.delete('/categories/:id', async (req, res) =>
   res.json(await service.deleteCategory(String(req.params.id))),
 );
 
 adminBlogRouter.get('/authors', async (_req, res) =>
   res.json({ items: await service.adminListAuthors() }),
 );
-adminBlogRouter.post('/authors', canWrite, async (req, res) =>
+adminBlogRouter.post('/authors', async (req, res) =>
   res.status(201).json(await service.createAuthor(parse(schemas.authorSchema, req.body))),
 );
-adminBlogRouter.patch('/authors/:id', canWrite, async (req, res) =>
+adminBlogRouter.patch('/authors/:id', async (req, res) =>
   res.json(
     await service.updateAuthor(String(req.params.id), parse(schemas.updateAuthorSchema, req.body)),
   ),
 );
-adminBlogRouter.delete('/authors/:id', canWrite, async (req, res) =>
+adminBlogRouter.delete('/authors/:id', async (req, res) =>
   res.json(await service.deleteAuthor(String(req.params.id))),
 );
 
 /** Images for featured images and the editor body. */
-adminBlogRouter.post('/uploads', canWrite, singleFile, async (req, res) => {
+adminBlogRouter.post('/uploads', singleFile, async (req, res) => {
   res
     .status(201)
     .json(

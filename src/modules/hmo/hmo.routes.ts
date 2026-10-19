@@ -6,7 +6,6 @@ import { authenticate, currentUser } from '../../middleware/authenticate.js';
 import {
   authenticateAdmin,
   currentAdmin,
-  requireAdminRole,
 } from '../../middleware/authenticate-admin.js';
 import * as activity from './hmo.activity.js';
 import * as agreements from './hmo.agreements.js';
@@ -72,17 +71,16 @@ hmoMemberRouter.delete('/me', async (req, res) =>
 
 export const adminHmoRouter = Router();
 adminHmoRouter.use(authenticateAdmin);
-const canManage = requireAdminRole('admin');
 const hmoId = (req: Request) => String(req.params.hmoId);
 /** Every change is recorded in the HMO's activity trail, which the HMO can read. */
 const actor = (req: Request) => activity.adminActor(currentAdmin(req).adminId);
 
 adminHmoRouter.get('/', async (_req, res) => res.json({ items: await agreements.listHmos() }));
-adminHmoRouter.post('/', canManage, async (req, res) =>
+adminHmoRouter.post('/', async (req, res) =>
   res.status(201).json(await agreements.createHmo(parse(schemas.hmoSchema, req.body))),
 );
 adminHmoRouter.get('/:hmoId', async (req, res) => res.json(await agreements.getHmo(hmoId(req))));
-adminHmoRouter.patch('/:hmoId', canManage, async (req, res) =>
+adminHmoRouter.patch('/:hmoId', async (req, res) =>
   res.json(
     await agreements.updateHmo(
       hmoId(req),
@@ -92,7 +90,7 @@ adminHmoRouter.patch('/:hmoId', canManage, async (req, res) =>
   ),
 );
 
-adminHmoRouter.post('/:hmoId/plans', canManage, async (req, res) =>
+adminHmoRouter.post('/:hmoId/plans', async (req, res) =>
   res
     .status(201)
     .json(
@@ -103,7 +101,7 @@ adminHmoRouter.post('/:hmoId/plans', canManage, async (req, res) =>
       ),
     ),
 );
-adminHmoRouter.patch('/:hmoId/plans/:planId', canManage, async (req, res) =>
+adminHmoRouter.patch('/:hmoId/plans/:planId', async (req, res) =>
   res.json(
     await agreements.updatePlan(
       hmoId(req),
@@ -116,7 +114,7 @@ adminHmoRouter.patch('/:hmoId/plans/:planId', canManage, async (req, res) =>
 adminHmoRouter.get('/:hmoId/plans/:planId/price-preview', async (req, res) =>
   res.json(await agreements.pricePreview(hmoId(req), String(req.params.planId))),
 );
-adminHmoRouter.post('/:hmoId/plans/:planId/rules', canManage, async (req, res) =>
+adminHmoRouter.post('/:hmoId/plans/:planId/rules', async (req, res) =>
   res
     .status(201)
     .json(
@@ -128,7 +126,7 @@ adminHmoRouter.post('/:hmoId/plans/:planId/rules', canManage, async (req, res) =
       ),
     ),
 );
-adminHmoRouter.put('/:hmoId/plans/:planId/rules/:ruleId', canManage, async (req, res) =>
+adminHmoRouter.put('/:hmoId/plans/:planId/rules/:ruleId', async (req, res) =>
   res.json(
     await agreements.updateRule(
       hmoId(req),
@@ -139,7 +137,7 @@ adminHmoRouter.put('/:hmoId/plans/:planId/rules/:ruleId', canManage, async (req,
     ),
   ),
 );
-adminHmoRouter.delete('/:hmoId/plans/:planId/rules/:ruleId', canManage, async (req, res) =>
+adminHmoRouter.delete('/:hmoId/plans/:planId/rules/:ruleId', async (req, res) =>
   res.json(
     await agreements.deleteRule(
       hmoId(req),
@@ -153,7 +151,7 @@ adminHmoRouter.delete('/:hmoId/plans/:planId/rules/:ruleId', canManage, async (r
 adminHmoRouter.get('/:hmoId/enrollees', async (req, res) =>
   res.json(await enrollees.listEnrollees(hmoId(req), parse(schemas.enrolleesQuery, req.query))),
 );
-adminHmoRouter.post('/:hmoId/enrollees', canManage, async (req, res) =>
+adminHmoRouter.post('/:hmoId/enrollees', async (req, res) =>
   res
     .status(201)
     .json(
@@ -164,7 +162,7 @@ adminHmoRouter.post('/:hmoId/enrollees', canManage, async (req, res) =>
       ),
     ),
 );
-adminHmoRouter.post('/:hmoId/enrollees/import', canManage, async (req, res) =>
+adminHmoRouter.post('/:hmoId/enrollees/import', async (req, res) =>
   res.json(
     await enrollees.importEnrollees(
       hmoId(req),
@@ -173,7 +171,7 @@ adminHmoRouter.post('/:hmoId/enrollees/import', canManage, async (req, res) =>
     ),
   ),
 );
-adminHmoRouter.patch('/:hmoId/enrollees/:enrolleeId', canManage, async (req, res) =>
+adminHmoRouter.patch('/:hmoId/enrollees/:enrolleeId', async (req, res) =>
   res.json(
     await enrollees.updateEnrollee(
       hmoId(req),
@@ -187,7 +185,7 @@ adminHmoRouter.patch('/:hmoId/enrollees/:enrolleeId', canManage, async (req, res
 adminHmoRouter.get('/:hmoId/claims', async (req, res) =>
   res.json(await claims.listClaims(hmoId(req), parse(schemas.claimsQuery, req.query))),
 );
-adminHmoRouter.patch('/:hmoId/claims/:claimId', canManage, async (req, res) =>
+adminHmoRouter.patch('/:hmoId/claims/:claimId', async (req, res) =>
   res.json(
     await claims.updateClaim(
       hmoId(req),
@@ -200,7 +198,7 @@ adminHmoRouter.patch('/:hmoId/claims/:claimId', canManage, async (req, res) =>
 adminHmoRouter.get('/:hmoId/invoices', async (req, res) =>
   res.json({ items: await claims.listInvoices(hmoId(req)) }),
 );
-adminHmoRouter.post('/:hmoId/invoices', canManage, async (req, res) =>
+adminHmoRouter.post('/:hmoId/invoices', async (req, res) =>
   res
     .status(201)
     .json(
@@ -215,7 +213,7 @@ adminHmoRouter.post('/:hmoId/invoices', canManage, async (req, res) =>
 adminHmoRouter.get('/:hmoId/invoices/:invoiceId', async (req, res) =>
   res.json(await claims.getInvoice(hmoId(req), String(req.params.invoiceId))),
 );
-adminHmoRouter.patch('/:hmoId/invoices/:invoiceId', canManage, async (req, res) =>
+adminHmoRouter.patch('/:hmoId/invoices/:invoiceId', async (req, res) =>
   res.json(
     await claims.updateInvoice(
       hmoId(req),
@@ -230,7 +228,7 @@ adminHmoRouter.patch('/:hmoId/invoices/:invoiceId', canManage, async (req, res) 
 adminHmoRouter.get('/:hmoId/authorizations', async (req, res) =>
   res.json(await authorizations.listAuthorizations(hmoId(req), parse(schemas.authorizationsQuery, req.query))),
 );
-adminHmoRouter.post('/:hmoId/authorizations/:id/decision', canManage, async (req, res) =>
+adminHmoRouter.post('/:hmoId/authorizations/:id/decision', async (req, res) =>
   res.json(
     await authorizations.decideAuthorization(
       hmoId(req),
@@ -261,7 +259,7 @@ adminHmoRouter.get('/:hmoId/plans/:planId/capitation/:month/members', async (req
 adminHmoRouter.get('/:hmoId/users', async (req, res) =>
   res.json({ items: await hmoUsers.listUsers(hmoId(req)) }),
 );
-adminHmoRouter.post('/:hmoId/users', canManage, async (req, res) =>
+adminHmoRouter.post('/:hmoId/users', async (req, res) =>
   res
     .status(201)
     .json(
@@ -272,7 +270,7 @@ adminHmoRouter.post('/:hmoId/users', canManage, async (req, res) =>
       ),
     ),
 );
-adminHmoRouter.patch('/:hmoId/users/:userId', canManage, async (req, res) =>
+adminHmoRouter.patch('/:hmoId/users/:userId', async (req, res) =>
   res.json(
     await hmoUsers.updateUser(
       hmoId(req),
@@ -282,7 +280,7 @@ adminHmoRouter.patch('/:hmoId/users/:userId', canManage, async (req, res) =>
     ),
   ),
 );
-adminHmoRouter.post('/:hmoId/users/:userId/reset-password', canManage, async (req, res) =>
+adminHmoRouter.post('/:hmoId/users/:userId/reset-password', async (req, res) =>
   res.json(
     await hmoUsers.resetPassword(
       hmoId(req),
@@ -305,7 +303,7 @@ adminHmoLinkRequestsRouter.use(authenticateAdmin);
 adminHmoLinkRequestsRouter.get('/', async (req, res) =>
   res.json(await enrollees.listLinkRequests(parse(schemas.linkRequestsQuery, req.query))),
 );
-adminHmoLinkRequestsRouter.post('/:id/approve', canManage, async (req, res) =>
+adminHmoLinkRequestsRouter.post('/:id/approve', async (req, res) =>
   res.json(
     await enrollees.approveLinkRequest(
       currentAdmin(req).adminId,
@@ -314,7 +312,7 @@ adminHmoLinkRequestsRouter.post('/:id/approve', canManage, async (req, res) =>
     ),
   ),
 );
-adminHmoLinkRequestsRouter.post('/:id/reject', canManage, async (req, res) =>
+adminHmoLinkRequestsRouter.post('/:id/reject', async (req, res) =>
   res.json(
     await enrollees.rejectLinkRequest(
       currentAdmin(req).adminId,
@@ -346,7 +344,7 @@ adminHmoApplicationsRouter.get('/', async (req, res) =>
 adminHmoApplicationsRouter.get('/:id', async (req, res) =>
   res.json(await applications.get(String(req.params.id))),
 );
-adminHmoApplicationsRouter.post('/:id/approve', canManage, async (req, res) =>
+adminHmoApplicationsRouter.post('/:id/approve', async (req, res) =>
   res.json(
     await applications.approve(
       String(req.params.id),
@@ -355,7 +353,7 @@ adminHmoApplicationsRouter.post('/:id/approve', canManage, async (req, res) =>
     ),
   ),
 );
-adminHmoApplicationsRouter.post('/:id/reject', canManage, async (req, res) =>
+adminHmoApplicationsRouter.post('/:id/reject', async (req, res) =>
   res.json(
     await applications.reject(
       String(req.params.id),

@@ -104,6 +104,9 @@ export const mailer = {
   opsPharmacyApplication: (input: Parameters<typeof templates.opsPharmacyApplication>[0]) =>
     send(env.OPS_EMAIL, 'ops-pharmacy-application', templates.opsPharmacyApplication(input)),
 
+  adminInvited: (input: { to: string } & Parameters<typeof templates.adminInvited>[0]) =>
+    send(input.to, 'admin-invited', templates.adminInvited(input)),
+
   opsHmoApplication: (input: Parameters<typeof templates.opsHmoApplication>[0]) =>
     send(env.OPS_EMAIL, 'ops-hmo-application', templates.opsHmoApplication(input)),
 

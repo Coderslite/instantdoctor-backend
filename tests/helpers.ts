@@ -4,7 +4,7 @@ import { db, pool } from '../src/db/client.js';
 import * as s from '../src/db/schema/index.js';
 import { primeRates } from '../src/integrations/exchange-rates.js';
 import { newId } from '../src/lib/ids.js';
-import { signAccessToken } from '../src/lib/tokens.js';
+import { signAccessToken, signAdminAccessToken } from '../src/lib/tokens.js';
 
 export const app = createApp();
 export const api = () => request(app);
@@ -68,3 +68,10 @@ export async function createPackage(overrides: Partial<typeof s.appointmentPacka
 
 export const inHours = (h: number) => new Date(Date.now() + h * 3_600_000);
 export const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
+
+/** An admin account with this role (the API checks the account exists and is active); returns its access token. */
+export async function adminToken(role: s.AdminRole = 'admin') {
+  const id = newId();
+  await db.insert(s.admins).values({ id, name: `${role} admin`, email: `${id}@admin.test`, role });
+  return signAdminAccessToken({ sub: id, role });
+}

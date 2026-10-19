@@ -1,14 +1,12 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { env } from '../../src/config/env.js';
 import { closeDatabase } from '../../src/db/client.js';
-import { newId } from '../../src/lib/ids.js';
-import { signAdminAccessToken } from '../../src/lib/tokens.js';
-import { api, auth, resetDatabase } from '../helpers.js';
+import { adminToken, api, auth, resetDatabase } from '../helpers.js';
 
 afterAll(() => closeDatabase());
 
 describe('website blog refresh', () => {
-  const token = signAdminAccessToken({ sub: newId(), role: 'admin' });
+  let token: string;
   const original = env.WEBSITE_REVALIDATE_SECRET;
   let website: ReturnType<
     typeof vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>
@@ -16,6 +14,7 @@ describe('website blog refresh', () => {
 
   beforeEach(async () => {
     await resetDatabase();
+    token = await adminToken();
     env.WEBSITE_REVALIDATE_SECRET = 'test-secret';
     const realFetch = globalThis.fetch;
     website = vi.fn(

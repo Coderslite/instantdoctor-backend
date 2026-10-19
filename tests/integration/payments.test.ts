@@ -7,9 +7,8 @@ import { registerPaymentProvider } from '../../src/integrations/payments/registr
 import { primeRates } from '../../src/integrations/exchange-rates.js';
 import type { PaymentProvider, VerifyResult } from '../../src/integrations/payments/types.js';
 import { newId } from '../../src/lib/ids.js';
-import { signAdminAccessToken } from '../../src/lib/tokens.js';
 import { reconcilePendingPayments } from '../../src/modules/payments/payments.service.js';
-import { api, auth, createDoctor, createPackage, createUser, inHours, resetDatabase } from '../helpers.js';
+import { adminToken as newAdminToken, api, auth, createDoctor, createPackage, createUser, inHours, resetDatabase } from '../helpers.js';
 
 /** Fake Paystack: real webhook signing, scripted verification results. */
 class FakePaystack implements PaymentProvider {
@@ -102,7 +101,7 @@ describe('payments', () => {
   });
 
   it('settles doctor and referral earnings using the policy stored when payment started', async () => {
-    const adminToken = signAdminAccessToken({ sub: newId(), role: 'admin' });
+    const adminToken = await newAdminToken();
     const authAdmin = { Authorization: `Bearer ${adminToken}` };
     await api().put('/api/v1/admin/commercial-fees').set(authAdmin).send({
       gatewayFeePercent: 0,

@@ -1278,3 +1278,37 @@ export function opsPharmacyApplication(input: {
   const text = plainText(['New pharmacy application', ...rows.map(([label, value]) => `${label}: ${value}`), '', `Review: ${link}`]);
   return { subject: `[Pharmacy application] ${input.pharmacyName}`, html, text };
 }
+
+// ─── Admin team ──────────────────────────────────────────────────────────────
+
+export function adminInvited(input: { name: string; invitedBy: string; roleLabel: string; roleDescription: string; email: string; password: string; adminUrl: string }): RenderedMail {
+  const url = input.adminUrl.replace(/\/$/, '');
+  const html = layout({
+    preheader: `${input.invitedBy} added you to the Instant Doctor admin.`,
+    body: [
+      heading('You’ve been added to the Instant Doctor admin'),
+      paragraph(escapeHtml(greeting(firstWord(input.name)))),
+      paragraph(`${escapeHtml(input.invitedBy)} gave you <strong>${escapeHtml(input.roleLabel)}</strong> access to the Instant Doctor admin. ${escapeHtml(input.roleDescription)}`),
+      detailsTable([
+        ['Admin', url.replace(/^https?:\/\//, '')],
+        ['Email', input.email],
+        ['Temporary password', input.password],
+      ]),
+      button('Sign in to the admin', `${url}/login`),
+      notice('You’ll be asked to choose your own password when you first sign in. Keep this email private: the temporary password stops working once you do.'),
+    ].join(''),
+    footerNote: 'Internal message for the Instant Doctor team.',
+  });
+  const text = plainText([
+    greeting(firstWord(input.name)),
+    '',
+    `${input.invitedBy} gave you ${input.roleLabel} access to the Instant Doctor admin. ${input.roleDescription}`,
+    '',
+    `Admin: ${url}/login`,
+    `Email: ${input.email}`,
+    `Temporary password: ${input.password}`,
+    '',
+    'You’ll be asked to choose your own password when you first sign in.',
+  ]);
+  return { subject: `Your Instant Doctor admin access (${input.roleLabel})`, html, text };
+}
