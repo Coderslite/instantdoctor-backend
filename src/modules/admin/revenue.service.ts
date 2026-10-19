@@ -48,39 +48,45 @@ const LABELS: Record<RevenueStream, { label: string; detail: string }> = {
 /** Lagos (WAT, UTC+1) month of a UTC timestamp column. */
 const lagosMonth = (column: SQLWrapper) => sql<string>`DATE_FORMAT(DATE_ADD(${column}, INTERVAL 1 HOUR), '%Y-%m')`;
 
-type Row = { stream: RevenueStream; month: string; currency: string; amount: number; count: number };
+/** `amount` is what Instant Doctor keeps; `gross` is what was paid for it (by the customer or their HMO). */
+type Row = { stream: RevenueStream; month: string; currency: string; amount: number; gross: number; count: number };
 
 /** Every stream's earnings in [from, to), by Lagos month and currency. */
 async function rows(from: Date, to: Date): Promise<Row[]> {
   const fromMonth = monthOf(from);
   const lastMonth = monthOf(new Date(to.getTime() - 1));
-  const tag = (stream: RevenueStream) => (r: { month: string; currency: string | null; amount: string | number | null; count: number }) => ({
+  const tag = (stream: RevenueStream) => (r: { month: string; currency: string | null; amount: string | number | null; gross: string | number | null; count: number }) => ({
     stream,
     month: r.month,
     currency: (r.currency ?? 'NGN').toUpperCase(),
     amount: round2(Number(r.amount ?? 0)),
+    gross: round2(Number(r.gross ?? 0)),
     count: Number(r.count),
   });
 
   const doctorFee = sql`COALESCE(${appointments.doctorEarning}, ${appointments.price} * 0.6)`;
+  // Bookings brought over from Firebase have no payment time: date them by when they were made.
+  const paidOn = sql`COALESCE(${appointments.paidAt}, ${appointments.createdAt})`;
   const [consultations, labs, pharmacy, family, hmo, capitation] = await Promise.all([
     db
       .select({
-        month: lagosMonth(appointments.paidAt),
+        month: lagosMonth(paidOn),
         currency: appointments.currency,
         amount: sql<string>`SUM(CASE WHEN ${appointments.status} IN ('cancelled', 'deleted')
           THEN ${appointments.price} - COALESCE(${appointments.refundedAmount}, 0)
           ELSE ${appointments.price} - ${doctorFee} END)`,
+        gross: sql<string>`SUM(${appointments.price} - COALESCE(${appointments.refundedAmount}, 0))`,
         count: sql<number>`COUNT(*)`,
       })
       .from(appointments)
-      .where(and(eq(appointments.isPaid, true), eq(appointments.isTrial, false), gte(appointments.paidAt, from), lt(appointments.paidAt, to)))
+      .where(and(eq(appointments.isPaid, true), eq(appointments.isTrial, false), gte(paidOn, from), lt(paidOn, to)))
       .groupBy(sql`1`, sql`2`),
     db
       .select({
         month: lagosMonth(labResults.createdAt),
         currency: labResults.currency,
         amount: sql<string>`SUM(${labResults.price})`,
+        gross: sql<string>`SUM(${labResults.price})`,
         count: sql<number>`COUNT(*)`,
       })
       .from(labResults)
@@ -92,6 +98,9 @@ async function rows(from: Date, to: Date): Promise<Row[]> {
         currency: orderCheckouts.currency,
         // The checkout's service charge, shared across its orders by their goods.
         amount: sql<string>`SUM(COALESCE(${orders.platformEarning}, 0)
+          + CASE WHEN ${orderCheckouts.subtotal} > 0 THEN COALESCE(${payments.surcharge}, 0) * ${orders.subtotal} / ${orderCheckouts.subtotal} ELSE 0 END)`,
+        // Goods and delivery paid by the customer and their HMO, plus the service charge.
+        gross: sql<string>`SUM(${orders.totalAmount}
           + CASE WHEN ${orderCheckouts.subtotal} > 0 THEN COALESCE(${payments.surcharge}, 0) * ${orders.subtotal} / ${orderCheckouts.subtotal} ELSE 0 END)`,
         count: sql<number>`COUNT(*)`,
       })
@@ -108,6 +117,7 @@ async function rows(from: Date, to: Date): Promise<Row[]> {
         month: lagosMonth(payments.paidAt),
         currency: payments.currency,
         amount: sql<string>`SUM(${payments.amount})`,
+        gross: sql<string>`SUM(${payments.amount})`,
         count: sql<number>`COUNT(*)`,
       })
       .from(payments)
@@ -118,6 +128,7 @@ async function rows(from: Date, to: Date): Promise<Row[]> {
         month: lagosMonth(hmoClaims.serviceDate),
         currency: sql<string>`'NGN'`,
         amount: sql<string>`SUM(${hmoClaims.hmoAmount})`,
+        gross: sql<string>`SUM(${hmoClaims.hmoAmount})`,
         count: sql<number>`COUNT(*)`,
       })
       .from(hmoClaims)
@@ -139,6 +150,7 @@ async function rows(from: Date, to: Date): Promise<Row[]> {
         month: hmoCapitationLines.month,
         currency: sql<string>`'NGN'`,
         amount: sql<string>`SUM(${hmoCapitationLines.amount})`,
+        gross: sql<string>`SUM(${hmoCapitationLines.amount})`,
         count: sql<number>`COUNT(*)`,
       })
       .from(hmoCapitationLines)
@@ -207,15 +219,19 @@ export async function revenueReport(query: { from: string; to: string }) {
   const { rates, missing } = await nairaRates([...period, ...trend].map((r) => r.currency));
 
   const total: Totals = {};
+  const collected: Totals = {};
   const streams = REVENUE_STREAMS.map((stream) => {
     const byCurrency: Totals = {};
+    const grossByCurrency: Totals = {};
     let count = 0;
     for (const r of period.filter((row) => row.stream === stream)) {
       add(byCurrency, r.currency, r.amount);
       add(total, r.currency, r.amount);
+      add(grossByCurrency, r.currency, r.gross);
+      add(collected, r.currency, r.gross);
       count += r.count;
     }
-    return { stream, ...LABELS[stream], byCurrency, ngnEquivalent: inNaira(byCurrency, rates), count };
+    return { stream, ...LABELS[stream], byCurrency, ngnEquivalent: inNaira(byCurrency, rates), collected: { byCurrency: grossByCurrency, ngnEquivalent: inNaira(grossByCurrency, rates) }, count };
   });
 
   const months = Array.from({ length: 12 }, (_, i) => addMonths(trendFrom, i));
@@ -234,6 +250,8 @@ export async function revenueReport(query: { from: string; to: string }) {
     from: query.from,
     to: query.to,
     total: { byCurrency: total, ngnEquivalent: inNaira(total, rates) },
+    /** Everything paid for these services, before doctor and pharmacy shares. */
+    collected: { byCurrency: collected, ngnEquivalent: inNaira(collected, rates) },
     streams,
     monthly,
     /** Naira per unit, at today's rates, used for every naira equivalent here. */

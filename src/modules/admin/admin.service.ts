@@ -19,6 +19,7 @@ import { alias } from 'drizzle-orm/mysql-core';
 import { db } from '../../db/client.js';
 import {
   admins,
+  doctorLedger,
   appSettings,
   appointmentPackages,
   appointments,
@@ -111,8 +112,13 @@ export async function refreshSession(refreshToken: string, userAgent?: string) {
 
 export const logout = (refreshToken: string) => closePortalSession('admin', refreshToken);
 
-/** Overview money cards: each figure by currency and as one naira equivalent at today's rates. */
-async function moneyCards(collected: { currency: string; value: string }[], escrow: { currency: string | null; doctorEscrow: string }[]) {
+/**
+ * Overview money cards, each by currency and as one naira equivalent at today's
+ * rates. Collected and earned come from the revenue report (so they always agree
+ * with Finance › Revenue, including bookings migrated from Firebase); escrow is
+ * what doctors are owed now, as on the doctor payouts page.
+ */
+async function moneyCards(escrow: { currency: string | null; doctorEscrow: string }[]) {
   const byCurrency = <T,>(rows: T[], currency: (r: T) => string | null, value: (r: T) => string) => {
     const totals: Record<string, number> = {};
     for (const r of rows) {
@@ -121,13 +127,12 @@ async function moneyCards(collected: { currency: string; value: string }[], escr
     }
     return totals;
   };
-  const revenueByCurrency = byCurrency(collected, (r) => r.currency, (r) => r.value);
   const escrowByCurrency = byCurrency(escrow, (r) => r.currency, (r) => r.doctorEscrow);
   const earned = await revenueReport({ from: '2015-01-01', to: new Date(Date.now() + 3600_000).toISOString().slice(0, 10) });
-  const { rates } = await nairaRates([...Object.keys(revenueByCurrency), ...Object.keys(escrowByCurrency)]);
+  const { rates } = await nairaRates(Object.keys(escrowByCurrency));
   return {
-    revenue: inNaira(revenueByCurrency, rates),
-    revenueByCurrency,
+    revenue: earned.collected.ngnEquivalent,
+    revenueByCurrency: earned.collected.byCurrency,
     platformEarnings: earned.total.ngnEquivalent,
     platformEarningsByCurrency: earned.total.byCurrency,
     doctorEscrow: inNaira(escrowByCurrency, rates),
@@ -149,7 +154,6 @@ export async function dashboard() {
     [activeCount],
     [completedCount],
     [cancelledCount],
-    collected,
     escrow,
     monthlyAppointments,
   ] = await Promise.all([
@@ -160,20 +164,11 @@ export async function dashboard() {
     db.select({ value: count() }).from(appointments).where(eq(appointments.status, 'active')),
     db.select({ value: count() }).from(appointments).where(eq(appointments.status, 'completed')),
     db.select({ value: count() }).from(appointments).where(eq(appointments.status, 'cancelled')),
-    // Money is kept per currency; the cards show a naira equivalent at today's rates.
+    // What doctors have earned and not yet been paid out (the doctor payouts ledger).
     db
-      .select({ currency: payments.currency, value: sql<string>`coalesce(sum(${payments.amount}), 0)` })
-      .from(payments)
-      .where(eq(payments.status, 'succeeded'))
-      .groupBy(payments.currency),
-    db
-      .select({
-        currency: appointments.currency,
-        doctorEscrow: sql<string>`coalesce(sum(case when ${appointments.isTrial} then 0 else coalesce(${appointments.doctorEarning}, ${appointments.price} * 0.6) end), 0)`,
-      })
-      .from(appointments)
-      .where(eq(appointments.isPaid, true))
-      .groupBy(appointments.currency),
+      .select({ currency: doctorLedger.currency, doctorEscrow: sql<string>`coalesce(sum(${doctorLedger.amount}), 0)` })
+      .from(doctorLedger)
+      .groupBy(doctorLedger.currency),
     db
       .select({
         date: sql<string>`date_format(${appointments.startTime}, '%Y-%m-%d')`,
@@ -193,7 +188,7 @@ export async function dashboard() {
     completedAppointments: completedCount?.value ?? 0,
     cancelledAppointments: cancelledCount?.value ?? 0,
     monthlyAppointments,
-    ...(await moneyCards(collected, escrow)),
+    ...(await moneyCards(escrow)),
   };
 }
 

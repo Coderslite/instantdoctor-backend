@@ -50,6 +50,8 @@ describe('admin revenue report', () => {
     await appointment({ price: 2_000, status: 'cancelled' });
     await appointment({ price: 0, isTrial: true, status: 'completed' });
     const hmoVisit = await appointment({ price: 0, doctorEarning: 3_600, status: 'completed' });
+    // Migrated from Firebase: paid, but no payment time recorded — dated by when it was booked.
+    await appointment({ price: 1_000, doctorEarning: 600, status: 'completed', paidAt: null });
 
     // Lab review fee, and one still unpaid.
     await db.insert(labResults).values([
@@ -89,16 +91,23 @@ describe('admin revenue report', () => {
     expect(res.status).toBe(200);
     const stream = (key: string) => res.body.streams.find((s: { stream: string }) => s.stream === key);
 
-    expect(stream('consultations')).toMatchObject({ byCurrency: { NGN: 3_000 + 0 + 2_000 - 3_600, GBP: 4 }, ngnEquivalent: 1_400 + 4 * 1_875, count: 5 });
+    expect(stream('consultations')).toMatchObject({ byCurrency: { NGN: 3_000 + 0 + 2_000 - 3_600 + 400, GBP: 4 }, ngnEquivalent: 1_800 + 4 * 1_875, count: 6 });
     expect(stream('lab_reviews')).toMatchObject({ byCurrency: { NGN: 3_000 }, count: 1 });
     expect(stream('pharmacy')).toMatchObject({ byCurrency: { NGN: 700 }, count: 1 });
     expect(stream('family_care')).toMatchObject({ byCurrency: { NGN: 5_000 } });
     expect(stream('hmo_billing')).toMatchObject({ byCurrency: { NGN: 6_000 }, count: 1 });
     expect(stream('hmo_capitation')).toMatchObject({ byCurrency: {}, ngnEquivalent: 0 });
-    expect(res.body.total).toEqual({ byCurrency: { NGN: 16_100, GBP: 4 }, ngnEquivalent: 16_100 + 7_500 });
+    expect(res.body.total).toEqual({ byCurrency: { NGN: 16_500, GBP: 4 }, ngnEquivalent: 16_500 + 7_500 });
+    // Collected: what was paid for all of it, before doctor and pharmacy shares (refunds excluded).
+    const collectedNgn = 7_500 + 2_000 + 1_000 + 3_000 + 11_000 + 200 + 5_000 + 6_000;
+    expect(res.body.collected).toEqual({ byCurrency: { NGN: collectedNgn, GBP: 10 }, ngnEquivalent: collectedNgn + 10 * 1_875 });
     expect(res.body.rates.GBP).toBeCloseTo(1_875);
     expect(res.body.monthly).toHaveLength(12);
-    expect(res.body.monthly.at(-1)).toMatchObject({ month: thisMonth, ngnEquivalent: 23_600 });
+    expect(res.body.monthly.at(-1)).toMatchObject({ month: thisMonth, ngnEquivalent: 24_000 });
+
+    // The overview cards use the same figures; escrow is what doctors are owed now (none in this test).
+    const overview = await api().get('/api/v1/admin/dashboard').set(auth(signAdminAccessToken({ sub: adminId, role: 'admin' })));
+    expect(overview.body).toMatchObject({ platformEarnings: 24_000, revenue: collectedNgn + 18_750, doctorEscrow: 0 });
 
     // Outside the period: nothing.
     const empty = await api().get('/api/v1/admin/revenue?from=2020-01-01&to=2020-01-31').set(auth(signAdminAccessToken({ sub: adminId, role: 'admin' })));
