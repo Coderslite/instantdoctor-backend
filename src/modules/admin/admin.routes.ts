@@ -10,6 +10,8 @@ import {
 import { refreshSchema } from '../auth/auth.schemas.js';
 import * as schemas from './admin.schemas.js';
 import * as service from './admin.service.js';
+import { revenueReport } from './revenue.service.js';
+import { getFamilyCare, listFamilyCare } from './family-care.service.js';
 import * as payoutSchemas from '../payouts/payouts.schemas.js';
 import * as payouts from '../payouts/payouts.service.js';
 import { savePayoutSettings } from '../payouts/payouts.settings.js';
@@ -62,6 +64,9 @@ adminRouter.post('/auth/logout', async (req, res) => {
 
 adminRouter.use(authenticateAdmin);
 adminRouter.get('/dashboard', async (_req, res) => res.json(await service.dashboard()));
+adminRouter.get('/revenue', async (req, res) => res.json(await revenueReport(parse(schemas.revenueQuery, req.query))));
+adminRouter.get('/family-care', async (req, res) => res.json(await listFamilyCare(parse(schemas.familyCareQuery, req.query))));
+adminRouter.get('/family-care/:id', async (req, res) => res.json(await getFamilyCare(String(req.params.id))));
 adminRouter.get('/commercial-fees', async (_req, res) => res.json({ fees: await service.getCommercialFees() }));
 adminRouter.put('/commercial-fees', requireAdminRole('admin'), async (req, res) =>
   res.json(await service.updateCommercialFees(parse(schemas.commercialFeesSchema, req.body))),

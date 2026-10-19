@@ -1,3 +1,5 @@
+import { round2 } from '../../lib/money.js';
+import { inNaira, nairaRates, revenueReport } from './revenue.service.js';
 import { env } from '../../config/env.js';
 import {
   and,
@@ -109,6 +111,30 @@ export async function refreshSession(refreshToken: string, userAgent?: string) {
 
 export const logout = (refreshToken: string) => closePortalSession('admin', refreshToken);
 
+/** Overview money cards: each figure by currency and as one naira equivalent at today's rates. */
+async function moneyCards(collected: { currency: string; value: string }[], escrow: { currency: string | null; doctorEscrow: string }[]) {
+  const byCurrency = <T,>(rows: T[], currency: (r: T) => string | null, value: (r: T) => string) => {
+    const totals: Record<string, number> = {};
+    for (const r of rows) {
+      const c = (currency(r) ?? 'NGN').toUpperCase();
+      totals[c] = round2((totals[c] ?? 0) + Number(value(r)));
+    }
+    return totals;
+  };
+  const revenueByCurrency = byCurrency(collected, (r) => r.currency, (r) => r.value);
+  const escrowByCurrency = byCurrency(escrow, (r) => r.currency, (r) => r.doctorEscrow);
+  const earned = await revenueReport({ from: '2015-01-01', to: new Date(Date.now() + 3600_000).toISOString().slice(0, 10) });
+  const { rates } = await nairaRates([...Object.keys(revenueByCurrency), ...Object.keys(escrowByCurrency)]);
+  return {
+    revenue: inNaira(revenueByCurrency, rates),
+    revenueByCurrency,
+    platformEarnings: earned.total.ngnEquivalent,
+    platformEarningsByCurrency: earned.total.byCurrency,
+    doctorEscrow: inNaira(escrowByCurrency, rates),
+    doctorEscrowByCurrency: escrowByCurrency,
+  };
+}
+
 export async function dashboard() {
   const monthStart = new Date();
   monthStart.setDate(1);
@@ -123,8 +149,8 @@ export async function dashboard() {
     [activeCount],
     [completedCount],
     [cancelledCount],
-    [revenue],
-    [appointmentEarnings],
+    collected,
+    escrow,
     monthlyAppointments,
   ] = await Promise.all([
     db.select({ value: count() }).from(users).where(eq(users.role, 'user')),
@@ -134,17 +160,20 @@ export async function dashboard() {
     db.select({ value: count() }).from(appointments).where(eq(appointments.status, 'active')),
     db.select({ value: count() }).from(appointments).where(eq(appointments.status, 'completed')),
     db.select({ value: count() }).from(appointments).where(eq(appointments.status, 'cancelled')),
+    // Money is kept per currency; the cards show a naira equivalent at today's rates.
     db
-      .select({ value: sql<number>`coalesce(sum(${payments.amount}), 0)` })
+      .select({ currency: payments.currency, value: sql<string>`coalesce(sum(${payments.amount}), 0)` })
       .from(payments)
-      .where(eq(payments.status, 'succeeded')),
+      .where(eq(payments.status, 'succeeded'))
+      .groupBy(payments.currency),
     db
       .select({
-        doctorEscrow: sql<number>`coalesce(sum(case when ${appointments.isTrial} then 0 else coalesce(${appointments.doctorEarning}, ${appointments.price} * 0.6) end), 0)`,
-        platformEarnings: sql<number>`coalesce(sum(${appointments.price} - case when ${appointments.isTrial} then 0 else coalesce(${appointments.doctorEarning}, ${appointments.price} * 0.6) end), 0)`,
+        currency: appointments.currency,
+        doctorEscrow: sql<string>`coalesce(sum(case when ${appointments.isTrial} then 0 else coalesce(${appointments.doctorEarning}, ${appointments.price} * 0.6) end), 0)`,
       })
       .from(appointments)
-      .where(eq(appointments.isPaid, true)),
+      .where(eq(appointments.isPaid, true))
+      .groupBy(appointments.currency),
     db
       .select({
         date: sql<string>`date_format(${appointments.startTime}, '%Y-%m-%d')`,
@@ -164,9 +193,7 @@ export async function dashboard() {
     completedAppointments: completedCount?.value ?? 0,
     cancelledAppointments: cancelledCount?.value ?? 0,
     monthlyAppointments,
-    revenue: revenue?.value ?? 0,
-    platformEarnings: appointmentEarnings?.platformEarnings ?? 0,
-    doctorEscrow: appointmentEarnings?.doctorEscrow ?? 0,
+    ...(await moneyCards(collected, escrow)),
   };
 }
 

@@ -77,3 +77,16 @@ export const updateDoctorSchema = z.object({
 }).refine((value) => Object.keys(value).length > 0, 'At least one field is required');
 export const patientEmailSchema = z.object({ subject: z.string().trim().min(1).max(200), message: z.string().trim().min(1).max(10_000) });
 export const patientPushSchema = z.object({ title: z.string().trim().min(1).max(120), message: z.string().trim().min(1).max(500) });
+
+const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
+/** Whole Lagos days, both ends included; at most about five years. */
+export const revenueQuery = z
+  .object({ from: isoDay, to: isoDay })
+  .refine((v) => v.from <= v.to, { message: 'The period must end on or after its start', path: ['to'] });
+
+export const familyCareQuery = z.object({
+  state: z.enum(['active', 'trialing', 'expired']).optional(),
+  search: z.string().trim().max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  offset: z.coerce.number().int().min(0).default(0),
+});

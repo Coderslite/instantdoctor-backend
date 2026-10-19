@@ -1725,6 +1725,29 @@ op('post', '/hmo-applications', {
   errors: { 409: 'APPLICATION_EXISTS — an application from this email is under review' },
 });
 
+op('get', '/admin/revenue', {
+  tag: 'Admin',
+  summary: 'Instant Doctor’s own revenue by stream, in each currency',
+  description:
+    'For whole Lagos days `from`–`to` (inclusive), plus a 12-month trend ending with `to`. Streams: consultations (paid less doctor fees and refunds), lab reviews, pharmacy commission and service charge, Family Care memberships, HMO billing (consultations and lab reviews; medicine claims only repay the pharmacy) and HMO capitation. Amounts stay in their own currency (`byCurrency`); `ngnEquivalent` converts at today’s rates, and currencies without a rate are listed in `unconverted`.',
+  query: adminSchemas.revenueQuery,
+  ok: { 200: z.record(z.string(), z.unknown()) },
+});
+op('get', '/admin/family-care', {
+  tag: 'Admin',
+  summary: 'Family Care members',
+  description:
+    'Everyone who started Family Care, paying members first. `state` is worked out from the dates: active (paid month running), trialing (free trial running) or expired. `summary` counts each state, how many ever paid, paid months ending within 7 days, and the monthly income from paying members per currency.',
+  query: adminSchemas.familyCareQuery,
+  ok: { 200: z.record(z.string(), z.unknown()) },
+});
+op('get', '/admin/family-care/:id', {
+  tag: 'Admin',
+  summary: 'One Family Care membership: member, family, payments and visits used',
+  params: idParam,
+  ok: { 200: z.record(z.string(), z.unknown()) },
+  errors: { 404: 'NOT_FOUND' },
+});
 const PHARMACY_APPLICATION_FLOW =
   'Pharmacies apply from the website. Approving creates the pharmacy in `onboarding` (not shown to patients) with an owner login; the owner is emailed a temporary password for the pharmacy portal and must replace it on first sign-in, then sets up the store. An admin switches the pharmacy to `active` when it is ready.';
 op('post', '/pharmacy-applications', {
