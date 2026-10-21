@@ -148,6 +148,36 @@ export async function closeFinishedAppointments(now = new Date()) {
   return { completed, flagged: review.length + notAccepted };
 }
 
+/**
+ * Once its start time arrives, an unpaid booking can no longer be paid for
+ * (checkout refuses started slots), so it is cancelled. Paid ones no doctor
+ * accepted are left to closeFinishedAppointments and admin review.
+ */
+export async function cancelUnpaidStartedAppointments(now = new Date()) {
+  const due = await db
+    .select({ id: appointments.id, userId: appointments.userId, doctorId: appointments.doctorId })
+    .from(appointments)
+    .where(and(eq(appointments.status, 'pending'), eq(appointments.isPaid, false), lte(appointments.startTime, now)))
+    .limit(200);
+  if (!due.length) return 0;
+  const ids = due.map((a) => a.id);
+  // isPaid is re-checked here so a payment confirmed in the meantime wins.
+  await db
+    .update(appointments)
+    .set({ status: 'cancelled' })
+    .where(and(inArray(appointments.id, ids), eq(appointments.status, 'pending'), eq(appointments.isPaid, false)));
+  const cancelled = await db
+    .select({ id: appointments.id })
+    .from(appointments)
+    .where(and(inArray(appointments.id, ids), eq(appointments.status, 'cancelled')));
+  for (const { id } of cancelled) {
+    const a = due.find((d) => d.id === id)!;
+    realtime.toUser(a.userId, 'appointment:updated', { id, status: 'cancelled', isPaid: false });
+    if (a.doctorId) realtime.toUser(a.doctorId, 'appointment:updated', { id, status: 'cancelled', isPaid: false });
+  }
+  return cancelled.length;
+}
+
 /* ───────────── admin review ───────────── */
 
 const patient = alias(users, 'patient');

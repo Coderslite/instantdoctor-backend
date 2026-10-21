@@ -20,6 +20,7 @@ import {
 import { emailAppointmentUpdate } from '../appointments/appointment-emails.js';
 import { sendPush, type PushMessage } from '../../integrations/push.js';
 import { notFound } from '../../lib/errors.js';
+import { logger } from '../../lib/logger.js';
 import { round2 } from '../../lib/money.js';
 import { settleAppointment } from '../doctor-payouts/doctor-payouts.ledger.js';
 import { realtime } from '../../realtime/gateway.js';
@@ -97,6 +98,26 @@ export async function confirmAppointment(
   if (appointment.isPaid && !appointment.isTrial) return { effects: [], duplicate: true };
 
   const now = new Date();
+  // A checkout that settled after the booking was cancelled: keep the money on
+  // record and hand it to admin review to refund, rather than reviving the booking.
+  if (appointment.status === 'cancelled') {
+    await tx
+      .update(appointments)
+      .set({
+        isPaid: true,
+        paidAt: now,
+        currency: opts.currency ?? appointment.currency,
+        status: 'pending',
+        needsReviewAt: now,
+        reviewReason: 'paid_after_cancel',
+      })
+      .where(eq(appointments.id, appointmentId));
+    return {
+      effects: [() => logger.warn({ appointmentId }, 'Payment settled on a cancelled appointment; flagged for review')],
+      duplicate: false,
+    };
+  }
+
   const earning = appointment.isTrial
     ? 0
     : appointment.isSubscriptionCredit || appointment.hmoClaimId

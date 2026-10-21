@@ -4,7 +4,12 @@ import { closeDatabase, db } from '../../src/db/client.js';
 import { admins, appointmentMessages, appointments, payments, users } from '../../src/db/schema/index.js';
 import { newId } from '../../src/lib/ids.js';
 import { signAdminAccessToken } from '../../src/lib/tokens.js';
-import { closeFinishedAppointments, remindDoctorsToComplete } from '../../src/modules/appointments/appointment-lifecycle.js';
+import {
+  cancelUnpaidStartedAppointments,
+  closeFinishedAppointments,
+  remindDoctorsToComplete,
+} from '../../src/modules/appointments/appointment-lifecycle.js';
+import { confirmAppointment } from '../../src/modules/payments/fulfillment.js';
 import { balances } from '../../src/modules/doctor-payouts/doctor-payouts.ledger.js';
 import { api, auth, createDoctor, createUser, inHours, resetDatabase } from '../helpers.js';
 
@@ -34,6 +39,37 @@ beforeEach(async () => {
   const adminId = newId();
   await db.insert(admins).values({ id: adminId, name: 'Ops', email: `${adminId}@admin.test`, role: 'admin' });
   adminToken = signAdminAccessToken({ sub: adminId, role: 'admin' });
+});
+
+describe('cancelling unpaid bookings at their start time', () => {
+  it('cancels unpaid pending bookings once they start, and leaves paid or future ones alone', async () => {
+    const doctor = await createDoctor();
+    const patient = await createUser();
+    const started = await endedVisit(doctor.id, patient.id, { status: 'pending', isPaid: false, startTime: inHours(-0.1), endTime: inHours(0.4) });
+    const expired = await endedVisit(null, patient.id, { status: 'pending', isPaid: false });
+    const future = await endedVisit(doctor.id, patient.id, { status: 'pending', isPaid: false, startTime: inHours(2), endTime: inHours(3) });
+    const paid = await endedVisit(doctor.id, patient.id, { status: 'pending', startTime: inHours(-0.1), endTime: inHours(0.4) });
+
+    expect(await cancelUnpaidStartedAppointments()).toBe(2);
+    expect((await statusOf(started)).status).toBe('cancelled');
+    expect((await statusOf(expired)).status).toBe('cancelled');
+    expect((await statusOf(future)).status).toBe('pending');
+    expect((await statusOf(paid)).status).toBe('pending');
+    expect(await cancelUnpaidStartedAppointments()).toBe(0);
+  });
+
+  it('a payment that settles after the cancellation goes to admin review instead of being lost', async () => {
+    const patient = await createUser();
+    const id = await endedVisit(null, patient.id, { status: 'pending', isPaid: false, startTime: inHours(-0.1), endTime: inHours(0.4) });
+    await cancelUnpaidStartedAppointments();
+
+    await db.transaction((tx) => confirmAppointment(tx, id));
+    expect(await statusOf(id)).toMatchObject({ status: 'pending', isPaid: true, reviewReason: 'paid_after_cancel' });
+    const open = await api().get('/api/v1/appointments/open').set(auth((await createDoctor()).token)).expect(200);
+    expect(open.body.items.map((a: { id: string }) => a.id)).not.toContain(id);
+    const review = await admin.get('/appointments/review');
+    expect(review.body.items.map((a: { id: string }) => a.id)).toContain(id);
+  });
 });
 
 describe('closing finished consultations', () => {

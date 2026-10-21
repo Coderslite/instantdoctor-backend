@@ -136,7 +136,7 @@ export const appointments = mysqlTable(
     patientJoinedAt: timestamp('patient_joined_at'),
     /** The doctor was reminded to complete it after its end time. */
     completionRemindedAt: timestamp('completion_reminded_at'),
-    /** Set when it can't be closed automatically; an admin decides. Reason: no_activity | not_accepted. */
+    /** Set when it can't be closed automatically; an admin decides. Reason: no_activity | not_accepted | paid_after_cancel. */
     needsReviewAt: timestamp('needs_review_at'),
     reviewReason: varchar('review_reason', { length: 32 }),
     refundedAt: timestamp('refunded_at'),

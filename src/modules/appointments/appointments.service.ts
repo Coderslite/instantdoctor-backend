@@ -616,6 +616,7 @@ export async function listOpenRequests(doctorId: string, query: { limit: number;
         or(isNull(appointments.doctorId), eq(appointments.doctorId, doctorId)),
         eq(appointments.status, 'pending'),
         eq(appointments.isPaid, true),
+        isNull(appointments.needsReviewAt),
         gt(appointments.endTime, new Date()),
       ),
     )

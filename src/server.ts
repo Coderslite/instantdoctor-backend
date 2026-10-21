@@ -9,7 +9,11 @@ import { reconcilePendingPayments } from './modules/payments/payments.service.js
 import { sweepUnsettledOrders } from './modules/payouts/payouts.ledger.js';
 import { reconcilePayouts, runWeeklyPayouts } from './modules/payouts/payouts.service.js';
 import { sweepUnsettledAppointments } from './modules/doctor-payouts/doctor-payouts.ledger.js';
-import { closeFinishedAppointments, remindDoctorsToComplete } from './modules/appointments/appointment-lifecycle.js';
+import {
+  cancelUnpaidStartedAppointments,
+  closeFinishedAppointments,
+  remindDoctorsToComplete,
+} from './modules/appointments/appointment-lifecycle.js';
 import {
   reconcilePayouts as reconcileDoctorPayouts,
   runWeeklyPayouts as runWeeklyDoctorPayouts,
@@ -91,6 +95,8 @@ const lifecycleJobs = () => {
   if (lifecycleBusy) return;
   lifecycleBusy = true;
   (async () => {
+    const lapsed = await cancelUnpaidStartedAppointments();
+    if (lapsed) logger.info({ cancelled: lapsed }, 'Unpaid appointments cancelled at start time');
     const reminded = await remindDoctorsToComplete();
     if (reminded) logger.info({ reminded }, 'Doctors reminded to complete consultations');
     const closed = await closeFinishedAppointments();
