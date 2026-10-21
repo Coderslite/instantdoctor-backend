@@ -1,3 +1,4 @@
+import { growthOverview, payingPatients } from './overview.service.js';
 import { can, permissionsFor } from '../../lib/admin-access.js';
 import type { AdminRole } from '../../db/schema/users.js';
 import { round2 } from '../../lib/money.js';
@@ -134,7 +135,26 @@ async function moneyCards(escrow: { currency: string | null; doctorEscrow: strin
   const escrowByCurrency = byCurrency(escrow, (r) => r.currency, (r) => r.doctorEscrow);
   const earned = await revenueReport({ from: '2015-01-01', to: new Date(Date.now() + 3600_000).toISOString().slice(0, 10) });
   const { rates } = await nairaRates(Object.keys(escrowByCurrency));
+  const months = earned.monthly;
+  // This month so far against the same days of last month (whole Lagos days).
+  const today = new Date(Date.now() + 3600_000).toISOString().slice(0, 10);
+  const [ty, tm, td] = today.split('-').map(Number) as [number, number, number];
+  const lastMonthDays = new Date(Date.UTC(ty, tm - 1, 0)).getUTCDate();
+  const lastFrom = new Date(Date.UTC(ty, tm - 2, 1)).toISOString().slice(0, 10);
+  const lastTo = new Date(Date.UTC(ty, tm - 2, Math.min(td, lastMonthDays))).toISOString().slice(0, 10);
+  const [thisSoFar, lastSoFar] = await Promise.all([
+    revenueReport({ from: `${today.slice(0, 7)}-01`, to: today }),
+    revenueReport({ from: lastFrom, to: lastTo }),
+  ]);
+  const revenueThisMonth = thisSoFar.total.ngnEquivalent;
+  const revenueLastMonth = lastSoFar.total.ngnEquivalent;
   return {
+    /** Revenue this month so far and over the same days of last month (naira at today's rates), and the change. */
+    revenueThisMonth,
+    revenueLastMonth,
+    revenueChange: revenueLastMonth > 0 ? Math.round(((revenueThisMonth - revenueLastMonth) / revenueLastMonth) * 1000) / 10 : null,
+    revenueTrend: months.map((m) => ({ month: m.month, revenue: m.ngnEquivalent })),
+    payingPatients: await payingPatients(),
     revenue: earned.collected.ngnEquivalent,
     revenueByCurrency: earned.collected.byCurrency,
     platformEarnings: earned.total.ngnEquivalent,
@@ -192,6 +212,7 @@ export async function dashboard(role: AdminRole = 'admin') {
     completedAppointments: completedCount?.value ?? 0,
     cancelledAppointments: cancelledCount?.value ?? 0,
     monthlyAppointments,
+    growth: await growthOverview(),
     // Money is for roles that can see finance.
     ...(can(role, 'finance') ? await moneyCards(escrow) : {}),
   };
