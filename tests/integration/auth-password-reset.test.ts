@@ -4,7 +4,7 @@ import { closeDatabase, db } from '../../src/db/client.js';
 import { otpCodes, passwordResetTokens, refreshTokens, users } from '../../src/db/schema/index.js';
 import { mailer } from '../../src/integrations/mailer.js';
 import { hashPassword } from '../../src/lib/crypto.js';
-import { api, createUser, resetDatabase } from '../helpers.js';
+import { adminToken, api, auth, createDoctor, createUser, resetDatabase } from '../helpers.js';
 
 afterAll(() => closeDatabase());
 
@@ -148,5 +148,62 @@ describe('password reset: forgot → verify code → reset', () => {
     const [user] = await db.select().from(users).where(eq(users.email, EMAIL));
     expect(user!.legacyAuth).toBe(false);
     expect((await login(NEW)).status).toBe(200);
+  });
+});
+
+describe('admin-started password reset for a doctor', () => {
+  const DOCTOR = 'dr.ade@example.com';
+  let links: Array<{ to: string; url: string; signedOut: boolean }>;
+  let doctorId: string;
+  const send = (token: string, id: string, body: object = {}) =>
+    api().post(`/api/v1/admin/doctors/${id}/password-reset`).set(auth(token)).send(body);
+  const tokenOf = (url: string) => new URL(url).searchParams.get('token')!;
+  const doctorLogin = (password: string) => api().post('/api/v1/auth/login').send({ email: DOCTOR, password });
+
+  beforeEach(async () => {
+    await resetDatabase();
+    vi.restoreAllMocks();
+    links = [];
+    vi.spyOn(mailer, 'passwordResetLink').mockImplementation(async ({ to, url, signedOut }) => {
+      links.push({ to, url, signedOut });
+    });
+    vi.spyOn(mailer, 'passwordChanged').mockResolvedValue();
+    doctorId = (await createDoctor({ email: DOCTOR, passwordHash: await hashPassword(OLD) })).id;
+  });
+
+  it('emails a website link that sets a new password once; the old password works until then', async () => {
+    const res = await send(await adminToken('admin'), doctorId);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ email: DOCTOR, signedOut: false });
+    expect(new Date(res.body.expiresAt).getTime()).toBeGreaterThan(Date.now() + 23 * 3_600_000);
+    expect(links).toHaveLength(1);
+    expect(links[0]!.to).toBe(DOCTOR);
+    expect(links[0]!.url).toMatch(/\/reset-password\?token=/);
+
+    expect((await doctorLogin(OLD)).status).toBe(200);
+    const token = tokenOf(links[0]!.url);
+    expect((await reset(token)).status).toBe(204);
+    expect((await reset(token)).status).toBe(400);
+    expect((await doctorLogin(NEW)).status).toBe(200);
+    expect((await doctorLogin(OLD)).status).toBe(401);
+  });
+
+  it('a newer link replaces an earlier one, and signOut ends sessions straight away', async () => {
+    const admin = await adminToken('admin');
+    const session = (await doctorLogin(OLD)).body.session;
+    await send(admin, doctorId);
+    await send(admin, doctorId, { signOut: true });
+    expect(links[1]!.signedOut).toBe(true);
+    expect((await api().post('/api/v1/auth/refresh').send({ refreshToken: session.refreshToken })).status).toBe(401);
+    expect((await reset(tokenOf(links[0]!.url))).status).toBe(400);
+    expect((await reset(tokenOf(links[1]!.url))).status).toBe(204);
+  });
+
+  it('only works for doctors, and only for roles that manage doctors', async () => {
+    const patient = await createUser();
+    expect((await send(await adminToken('admin'), patient.id)).status).toBe(404);
+    expect((await send(await adminToken('support'), doctorId)).status).toBe(403);
+    expect((await send(await adminToken('clinical'), doctorId)).status).toBe(200);
+    expect(links).toHaveLength(1);
   });
 });

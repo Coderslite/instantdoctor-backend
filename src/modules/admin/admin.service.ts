@@ -18,6 +18,7 @@ import {
   type SQLWrapper,
 } from 'drizzle-orm';
 import { resolveFileUrl, withResolvedUrls } from '../files/files.service.js';
+import { sendPasswordResetLink } from '../auth/auth.service.js';
 import { alias } from 'drizzle-orm/mysql-core';
 import { db } from '../../db/client.js';
 import {
@@ -641,6 +642,17 @@ export async function updateDoctor(id: string, input: DoctorUpdate) {
         .onDuplicateKeyUpdate({ set: profileInput });
   });
   return getDoctor(id);
+}
+
+/** Emails a doctor a link to choose a new password on the website. */
+export async function sendDoctorPasswordReset(id: string, signOut: boolean) {
+  const [doctor] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.id, id), eq(users.role, 'doctor')))
+    .limit(1);
+  if (!doctor) throw notFound('Doctor');
+  return sendPasswordResetLink(doctor.id, { signOut });
 }
 
 export async function setUserStatus(id: string, status: 'active' | 'suspended') {

@@ -28,6 +28,8 @@ const OTP_TTL_MS = 10 * 60 * 1000;
 const OTP_MAX_ATTEMPTS = 5;
 const OTP_RESEND_INTERVAL_MS = 60 * 1000;
 const RESET_TOKEN_TTL_MS = 15 * 60 * 1000;
+/** Links our team emails stay open longer than the in-app flow: the person may not see the email at once. */
+const ADMIN_RESET_LINK_TTL_MS = 24 * 60 * 60 * 1000;
 
 type UserRow = typeof users.$inferSelect;
 
@@ -529,7 +531,7 @@ export async function resetPassword(resetToken: string, newPassword: string) {
         ),
       );
     if (affectedRows(claimed) === 0) {
-      throw badRequest('This reset link has expired or was already used; request a new code');
+      throw badRequest('This reset link has expired or was already used; request a new one');
     }
     const [row] = await tx
       .select({ user: users })
@@ -567,4 +569,40 @@ export async function changePassword(userId: string, currentPassword: string, ne
     .where(eq(users.id, userId));
   await revokeAllSessions(userId);
   void mailer.passwordChanged({ to: user.email, firstName: user.firstName });
+}
+
+/**
+ * An admin starts a reset for someone: emails a single-use link to the website's
+ * /reset-password page, which finishes with the same resetPassword() as the app.
+ * The current password keeps working until the new one is set, unless `signOut`
+ * also ends every session now (e.g. a lost phone). Earlier unused links stop working.
+ */
+export async function sendPasswordResetLink(userId: string, options: { signOut?: boolean } = {}) {
+  const [user] = await db
+    .select({ id: users.id, email: users.email, firstName: users.firstName })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!user) throw badRequest('Account not found');
+
+  const resetToken = randomToken(32);
+  const expiresAt = new Date(Date.now() + ADMIN_RESET_LINK_TTL_MS);
+  await db.transaction(async (tx) => {
+    await tx
+      .update(passwordResetTokens)
+      .set({ usedAt: new Date() })
+      .where(and(eq(passwordResetTokens.userId, user.id), isNull(passwordResetTokens.usedAt)));
+    await tx.insert(passwordResetTokens).values({ id: newId(), userId: user.id, tokenHash: sha256(resetToken), expiresAt });
+  });
+  if (options.signOut) await revokeAllSessions(user.id);
+
+  const url = `${env.WEBSITE_URL.replace(/\/+$/, '')}/reset-password?token=${encodeURIComponent(resetToken)}`;
+  await mailer.passwordResetLink({
+    to: user.email,
+    firstName: user.firstName,
+    url,
+    expiresInHours: ADMIN_RESET_LINK_TTL_MS / 3_600_000,
+    signedOut: Boolean(options.signOut),
+  });
+  return { email: user.email, expiresAt, signedOut: Boolean(options.signOut) };
 }

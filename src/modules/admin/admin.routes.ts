@@ -119,6 +119,10 @@ adminRouter.patch('/doctors/:id', async (req, res) => {
     : input.certificateUrl;
   res.json(await service.updateDoctor(String(req.params.id), { ...input, certificateUrl }));
 });
+adminRouter.post('/doctors/:id/password-reset', async (req, res) => {
+  const { signOut } = parse(schemas.passwordResetSchema, req.body ?? {});
+  res.json(await service.sendDoctorPasswordReset(String(req.params.id), signOut));
+});
 adminRouter.patch('/users/:id/status', async (req, res) => {
   const { status } = parse(schemas.userStatusSchema, req.body);
   res.json(await service.setUserStatus(String(req.params.id), status));

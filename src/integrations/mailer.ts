@@ -26,6 +26,9 @@ export const mailer = {
   passwordChanged: (input: { to: string; firstName?: string | null; at?: Date }) =>
     send(input.to, 'password-changed', templates.passwordChanged({ ...input, at: input.at ?? new Date() })),
 
+  passwordResetLink: (input: { to: string } & Parameters<typeof templates.passwordResetLink>[0]) =>
+    send(input.to, 'password-reset-link', templates.passwordResetLink(input)),
+
   pharmacyNewOrder: (input: {
     to: string;
     pharmacyName?: string | null;

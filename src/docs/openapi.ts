@@ -2716,6 +2716,7 @@ adminOp('post', '/admin/patients/:id/push', 'Send a patient a push notification'
 adminOp('get', '/admin/doctors', 'Doctors directory', { query: adminSchemas.adminListQuery });
 adminOp('get', '/admin/doctors/:id', 'A doctor’s profile, bank details, earnings and recent appointments', { params: idParam });
 adminOp('patch', '/admin/doctors/:id', 'Edit a doctor', { params: idParam, body: adminSchemas.updateDoctorSchema, errors: adminWrite });
+adminOp('post', '/admin/doctors/:id/password-reset', 'Email a doctor a single-use link (24 h) to choose a new password on the website; `signOut` also ends their sessions now', { params: idParam, body: adminSchemas.passwordResetSchema, errors: adminWrite });
 adminOp('patch', '/admin/users/:id/status', 'Suspend or reactivate an account', { params: idParam, body: adminSchemas.userStatusSchema, errors: adminWrite });
 adminOp('get', '/admin/appointments', 'All appointments', { query: adminSchemas.adminListQuery });
 op('post', '/admin/appointments', { tag: 'Admin', summary: 'Book an appointment for a patient', description: ADMIN, body: adminSchemas.createAppointmentSchema, ok: { 201: adminJson }, errors: adminWrite });

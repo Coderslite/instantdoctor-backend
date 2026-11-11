@@ -12,6 +12,8 @@ export const adminListQuery = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 export const userStatusSchema = z.object({ status: z.enum(['active', 'suspended']) });
+/** Email a password reset link; `signOut` also ends every session now. */
+export const passwordResetSchema = z.object({ signOut: z.boolean().default(false) });
 export const appointmentStatusSchema = z.object({ status: z.enum(APPOINTMENT_STATUSES) });
 export const updateAppointmentSchema = z.object({
   doctorId: z.string().min(1).nullable().optional(), status: z.enum(APPOINTMENT_STATUSES).optional(), complaint: z.string().trim().max(5000).nullable().optional(),

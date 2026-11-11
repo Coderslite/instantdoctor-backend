@@ -206,6 +206,48 @@ export function passwordChanged(input: { firstName?: string | null; at: Date }):
   return { subject: `Your ${BRAND.name} password was changed`, html, text };
 }
 
+/** Sent when our team starts a password reset for someone: a single-use link to the website. */
+export function passwordResetLink(input: {
+  firstName?: string | null;
+  url: string;
+  expiresInHours: number;
+  signedOut: boolean;
+}): RenderedMail {
+  const expiry = `${input.expiresInHours} hour${input.expiresInHours === 1 ? '' : 's'}`;
+  const signedOut = input.signedOut ? ' You have also been signed out of all devices.' : '';
+  const html = layout({
+    preheader: 'Use this link to choose a new password for your Instant Doctor account.',
+    body: [
+      heading('Reset your password'),
+      paragraph(escapeHtml(greeting(input.firstName))),
+      paragraph(
+        `Our team has started a password reset for your Instant Doctor account. Use the button below to choose a new password.${signedOut}`,
+      ),
+      button('Choose a new password', input.url),
+      muted(
+        `This link works once and expires in <strong>${expiry}</strong>. If the button doesn't work, copy this address into your browser:<br><a href="${escapeHtml(input.url)}" style="color:${BRAND.deep};word-break:break-all;">${escapeHtml(input.url)}</a>`,
+      ),
+      notice(
+        "<strong>Didn't expect this?</strong> Your current password keeps working until you choose a new one. Contact our support team if you think something is wrong.",
+        'warning',
+      ),
+    ].join(''),
+    footerNote: 'You are receiving this security notice because a password reset was started for your account.',
+  });
+  const text = plainText([
+    greeting(input.firstName),
+    '',
+    `Our team has started a password reset for your Instant Doctor account.${signedOut} Choose a new password here:`,
+    '',
+    input.url,
+    '',
+    `This link works once and expires in ${expiry}.`,
+    '',
+    "Didn't expect this? Your current password keeps working until you choose a new one. Contact our support team if you think something is wrong.",
+  ]);
+  return { subject: `Reset your ${BRAND.name} password`, html, text };
+}
+
 export interface OrderLine {
   name: string;
   quantity: number;
