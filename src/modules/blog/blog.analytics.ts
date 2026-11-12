@@ -33,7 +33,7 @@ export type RequestInfo = {
   headers: Record<string, string | string[] | undefined>;
 };
 
-const BOT_UA = /bot|crawl|spider|slurp|facebookexternalhit|embedly|preview|headless|lighthouse|pingdom|uptime|monitor|curl|wget|python-requests|axios|node-fetch/i;
+export const BOT_UA = /bot|crawl|spider|slurp|facebookexternalhit|embedly|preview|headless|lighthouse|pingdom|uptime|monitor|curl|wget|python-requests|axios|node-fetch/i;
 
 /** Region names by country and ISO 3166-2 subdivision code, for every country. */
 const REGION_NAMES = new Map(allCountries.map(([, code, regions]) => [code as string, new Map(regions.map(([name, short]) => [short, name]))]));

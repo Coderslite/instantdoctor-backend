@@ -27,6 +27,8 @@
     "blog:seed-categories": "DB_TARGET=local tsx --env-file=.env scripts/seed-blog-categories.ts",
     "blog:seed-categories:live": "DB_TARGET=live tsx --env-file=.env scripts/seed-blog-categories.ts",
     "blog:reseed": "tsx --env-file=.env scripts/reseed-blog.ts",
+    "clicks:import": "DB_TARGET=local tsx --env-file=.env scripts/import-campaign-clicks.ts",
+    "clicks:import:live": "DB_TARGET=live tsx --env-file=.env scripts/import-campaign-clicks.ts",
     "storage:cors": "tsx --env-file=.env scripts/configure-storage-cors.ts"
   },
   "license": "UNLICENSED",

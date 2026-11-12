@@ -15,7 +15,7 @@ const TABLES = [
   'appointments', 'appointment_packages', 'order_events', 'order_issues', 'pharmacy_reviews', 'pharmacy_ledger', 'pharmacy_payouts', 'pharmacy_payout_runs', 'pharmacy_bank_accounts', 'inventory_movements', 'pos_sale_items', 'pos_sales', 'purchase_order_items', 'purchase_orders', 'suppliers', 'order_items', 'orders', 'order_checkouts', 'products',
   'pharmacy_staff', 'pharmacies', 'lab_result_files', 'lab_results', 'care_summary_shares', 'family_subscriptions', 'vital_readings', 'care_plans',
   'medication_doses', 'medications', 'family_profiles', 'service_charges', 'app_settings',
-  'doctor_profiles', 'payout_accounts', 'user_medical_profiles', 'refresh_tokens', 'portal_sessions', 'admins', 'password_reset_tokens', 'otp_codes', 'auth_identities', 'users',
+  'doctor_profiles', 'payout_accounts', 'user_medical_profiles', 'refresh_tokens', 'portal_sessions', 'admins', 'password_reset_tokens', 'otp_codes', 'auth_identities', 'users', 'download_clicks',
 ];
 
 export async function resetDatabase() {

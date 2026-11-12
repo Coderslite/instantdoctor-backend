@@ -127,6 +127,8 @@ const RULES: Rule[] = [
   { path: /^\/me(\/|$)/, areas: [...ADMIN_AREAS], access: 'view' },
   { path: /^\/uploads(\/|$)/, areas: ['blog', 'lab_results', 'pharmacy', 'doctors', 'mail', 'patients'] },
   { path: /^\/dashboard$/, areas: ['overview'] },
+  // App store badge clicks from the website: counts and sources, no personal data.
+  { path: /^\/download-clicks(\/|$)/, areas: ['overview'] },
 
   // Choosing recipients for mail and push: names and emails, not records.
   { path: /^\/(patients|doctors)$/, methods: GET, areas: ['patients', 'doctors', 'mail', 'notifications'], access: 'view' },

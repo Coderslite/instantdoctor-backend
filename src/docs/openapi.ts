@@ -25,6 +25,7 @@ import * as pharmacyPortal from '../modules/pharmacy-portal/pharmacy-portal.sche
 import * as pharmacyApplications from '../modules/pharmacy-applications/pharmacy-applications.schemas.js';
 import * as adminSchemas from '../modules/admin/admin.schemas.js';
 import * as blogAnalytics from '../modules/blog/blog.analytics.js';
+import * as downloadClicks from '../modules/download-clicks/download-clicks.service.js';
 import * as doctorApplications from '../modules/doctor-applications/doctor-applications.schemas.js';
 import * as payoutSchemas from '../modules/payouts/payouts.schemas.js';
 import * as doctorPayoutSchemas from '../modules/doctor-payouts/doctor-payouts.schemas.js';
@@ -1174,6 +1175,15 @@ op('post', '/blog/posts/:slug/view', {
   description: 'Rate limited per IP. Does not change `updatedAt`.',
   auth: false,
   params: slugParam,
+  ok: { 200: z.object({ counted: z.boolean() }) },
+});
+op('post', '/download-clicks', {
+  tag: 'Blog',
+  summary: 'Count an app store badge click on the website',
+  description:
+    'Sent by the website with `navigator.sendBeacon` as text/plain JSON. Rate limited per IP; bots and invalid bodies are not counted. Location comes from the IP (never stored).',
+  auth: false,
+  body: downloadClicks.clickBeacon,
   ok: { 200: z.object({ counted: z.boolean() }) },
 });
 op('get', '/blog/categories', {
@@ -2752,6 +2762,8 @@ op('post', '/admin/lab-results/:id/upload', {
 });
 adminOp('get', '/admin/payments', 'Payments', { query: adminSchemas.adminListQuery });
 adminOp('patch', '/admin/payments/:id/status', 'Correct a payment’s status', { params: idParam, body: adminSchemas.paymentStatusSchema, errors: adminWrite });
+adminOp('get', '/admin/download-clicks/report', 'App download clicks: totals, daily trend, sources, campaigns, countries and devices', { query: downloadClicks.reportQuery });
+adminOp('get', '/admin/download-clicks', 'App download clicks, newest first', { query: downloadClicks.listQuery });
 adminOp('get', '/admin/blog/analytics', 'Blog traffic, reading time and top posts', { query: blogAnalytics.analyticsQuery });
 op('post', '/blog/views/engagement', {
   tag: 'Content',

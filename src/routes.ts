@@ -4,6 +4,10 @@ import {
 } from './modules/pharmacy-applications/pharmacy-applications.routes.js';
 import { doctorEarningsRouter } from './modules/doctor-payouts/doctor-payouts.routes.js';
 import { Router } from 'express';
+import {
+  adminDownloadClicksRouter,
+  downloadClicksRouter,
+} from './modules/download-clicks/download-clicks.routes.js';
 import { anonymousRouter } from './modules/anonymous/anonymous.routes.js';
 import { appointmentsRouter } from './modules/appointments/appointments.routes.js';
 import { prescriptionsRouter } from './modules/prescriptions/prescriptions.routes.js';
@@ -55,6 +59,7 @@ apiRouter.use('/admin/hmo-link-requests', adminHmoLinkRequestsRouter);
 apiRouter.use('/admin/hmo-applications', adminHmoApplicationsRouter);
 apiRouter.use('/admin/pharmacy-applications', adminPharmacyApplicationsRouter);
 apiRouter.use('/admin/doctor-applications', adminDoctorApplicationsRouter);
+apiRouter.use('/admin/download-clicks', adminDownloadClicksRouter);
 apiRouter.use('/admin', adminRouter);
 apiRouter.use('/pharmacy-portal', pharmacyPortalRouter);
 apiRouter.use('/hmo-portal', hmoPortalRouter);
@@ -84,6 +89,7 @@ apiRouter.use('/notifications', notificationsRouter);
 apiRouter.use('/anonymous-questions', anonymousRouter);
 apiRouter.use('/reports', reportsRouter);
 apiRouter.use('/waitlist', waitlistRouter);
+apiRouter.use('/download-clicks', downloadClicksRouter);
 apiRouter.use('/uploads', uploadsRouter);
 apiRouter.use('/files', filesRouter);
 apiRouter.use('/', settingsRouter); // /settings, /currencies, /video-call
